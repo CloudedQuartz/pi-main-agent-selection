@@ -1,0 +1,29 @@
+{
+  "_documentation": {
+    "enabled": "Set to false to disable the extension entirely.",
+    "command": "Slash command name (without /). Changes take effect after /reload.",
+    "shortcut": "Keyboard shortcut for agent selection. Set to null to disable. Must be a key format understood by pi (e.g. 'alt+a', 'ctrl+a', 'f2'). Ctrl+Shift+letter combos require Kitty keyboard protocol or xterm modifyOtherKeys and do NOT work on Windows Terminal.",
+    "footer": {
+      "enabled": "Show coloured agent status in the footer.",
+      "statusKey": "Status bar key used by ctx.ui.setStatus().",
+      "prefix": "Text shown before the agent id.",
+      "colors": "Map exact agent ids to #RRGGBB colours. Unlisted agents get a deterministic colour hashed from the id.",
+      "noneColor": "Colour used when no main agent is selected.",
+      "examples": {
+        "default": "#A855F7",
+        "Explore": "#50B868",
+        "Plan": "#F8C038"
+      }
+    }
+  },
+  "enabled": true,
+  "command": "agent",
+  "shortcut": "alt+a",
+  "footer": {
+    "enabled": true,
+    "statusKey": "current-agent",
+    "prefix": "Agent:",
+    "colors": {},
+    "noneColor": "#6B7280"
+  }
+}

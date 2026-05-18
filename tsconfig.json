@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "/home/ayanp/.local/share/mise/installs/node/24.13.1/lib/node_modules/@earendil-works/pi-coding-agent/dist/index"
+      ],
+      "@earendil-works/pi-ai": [
+        "/home/ayanp/.local/share/mise/installs/node/24.13.1/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index"
+      ],
+      "@earendil-works/pi-tui": [
+        "/home/ayanp/.local/share/mise/installs/node/24.13.1/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/index"
+      ],
+      "@earendil-works/pi-agent-core": [
+        "/home/ayanp/.local/share/mise/installs/node/24.13.1/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index"
+      ],
+      "typebox": [
+        "/home/ayanp/.local/share/mise/installs/node/24.13.1/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/dist/index"
+      ]
+    }
+  },
+  "include": ["index.ts"],
+  "exclude": ["node_modules", "dist"]
+}

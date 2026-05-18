@@ -1,0 +1,25 @@
+{
+  "name": "pi-main-agent-selection",
+  "version": "1.0.0",
+  "description": "Configurable agent selection for pi with coloured footer status — replaces the bundled pi-agent-suite main-agent-selection extension",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.75.1",
+    "@earendil-works/pi-coding-agent": "^0.75.1",
+    "@earendil-works/pi-tui": "^0.75.1",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}
