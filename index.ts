@@ -14,15 +14,7 @@ import {
 	getAgentDir,
 	parseFrontmatter,
 } from "@earendil-works/pi-coding-agent";
-import {
-	type Component,
-	type Focusable,
-	Input,
-	type Keybinding,
-	type SelectItem,
-	SelectList,
-	truncateToWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, type SelectItem, SelectList } from "@earendil-works/pi-tui";
 
 // ── Constants & types ──
 
@@ -30,7 +22,6 @@ const EXT_DIR = "main-agent-selection";
 const STATE_ENTRY = "main-agent-selection";
 const NO_AGENT_VALUE = "__none__";
 const RESET = "\x1b[0m";
-const AGENT_TYPES = new Set(["main", "subagent", "both"]);
 const THINKING_VALUES = new Set([
 	"off",
 	"minimal",
@@ -70,25 +61,22 @@ const DEFAULT_CFG: Cfg = {
 interface AgentDef {
 	id: string;
 	description: string;
-	type: "main" | "subagent" | "both";
 	prompt: string;
 	model?: { id?: string; thinking?: string };
 	tools?: readonly string[];
-	agents?: readonly string[];
 }
 type StatusCtx = {
 	hasUI?: boolean;
 	ui: { setStatus(key: string, text: string | undefined): void };
 };
 interface MainCtx extends StatusCtx {
-	cwd: string;
 	sessionManager: { getEntries(): readonly unknown[] };
 	ui: StatusCtx["ui"] & {
 		custom?<T>(
 			factory: (
 				tui: { requestRender(): void },
 				theme: { fg(color: string, text: string): string },
-				kb: SelKeybindings,
+				keybindings: unknown,
 				done: (result: T) => void,
 			) => Component | Promise<Component>,
 		): Promise<T>;
@@ -97,16 +85,6 @@ interface MainCtx extends StatusCtx {
 	modelRegistry: {
 		find(provider: string, modelId: string): Model<Api> | undefined;
 	};
-}
-type SelKeybinding = Extract<
-	Keybinding,
-	| "tui.select.up"
-	| "tui.select.down"
-	| "tui.select.confirm"
-	| "tui.select.cancel"
->;
-interface SelKeybindings {
-	matches(data: string, kb: SelKeybinding): boolean;
 }
 
 // ── Module state ──
@@ -251,23 +229,19 @@ async function parseAgentFile(
 	if (!isRecord(fm) || !Object.keys(fm).every((k) => FM_KEYS.has(k)))
 		return undefined;
 	const type = fm.type ?? "main";
-	if (typeof type !== "string" || !AGENT_TYPES.has(type)) return undefined;
+	if (type !== "main" && type !== "both") return undefined;
 	if (fm.description !== undefined && typeof fm.description !== "string")
 		return undefined;
 	const model = parseModel(fm.model);
 	if (model === false) return undefined;
 	const tools = parseStrList(fm.tools);
 	if (tools === false) return undefined;
-	const agents = parseStrList(fm.agents);
-	if (agents === false) return undefined;
 	return {
 		id: basename(name, ".md"),
 		description: (fm.description as string) ?? "",
-		type: type as AgentDef["type"],
 		prompt: body.trim(),
 		...(model !== undefined ? { model } : {}),
 		...(tools !== undefined ? { tools } : {}),
-		...(agents !== undefined ? { agents } : {}),
 	};
 }
 
@@ -345,24 +319,6 @@ function resolveToolPolicy(
 			}
 	}
 	return { tools: resolved };
-}
-
-// ── Session state ──
-
-function sessionAgentId(ctx: MainCtx): string | null {
-	for (const entry of [...ctx.sessionManager.getEntries()].reverse()) {
-		if (
-			!isRecord(entry) ||
-			entry.type !== "custom" ||
-			entry.customType !== STATE_ENTRY
-		)
-			continue;
-		const data = entry.data;
-		return isRecord(data) && typeof data.agentId === "string"
-			? data.agentId
-			: null;
-	}
-	return null;
 }
 
 // ── Colour helpers ──
@@ -451,145 +407,7 @@ function updateFooter(cfg: Cfg): void {
 	);
 }
 
-// ── Agent selector UI ──
-
-class AgentSelector implements Component, Focusable {
-	private opts: readonly SelectItem[];
-	private kb: SelKeybindings;
-	private input = new Input();
-	private theme: { fg(c: string, t: string): string };
-	private onSelect: (v: string) => void;
-	private onCancel: () => void;
-	private list: SelectList;
-	private filtered: readonly SelectItem[];
-	private sel: string;
-	private maxVis: number;
-	private _focused = false;
-
-	constructor(opts: {
-		allOptions: readonly SelectItem[];
-		currentId: string | null;
-		keybindings: SelKeybindings;
-		theme: { fg(c: string, t: string): string };
-		onSelect: (v: string) => void;
-		onCancel: () => void;
-	}) {
-		this.opts = opts.allOptions;
-		this.kb = opts.keybindings;
-		this.theme = opts.theme;
-		this.onSelect = opts.onSelect;
-		this.onCancel = opts.onCancel;
-		this.filtered = opts.allOptions;
-		this.sel = opts.currentId ?? NO_AGENT_VALUE;
-		this.maxVis = Math.min(opts.allOptions.length, 10);
-		this.list = this.mkList(this.filtered);
-		this.syncSel();
-	}
-
-	get focused() {
-		return this._focused;
-	}
-	set focused(v: boolean) {
-		this._focused = v;
-		this.input.focused = v;
-	}
-
-	render(w: number): string[] {
-		const lines = [
-			truncateToWidth(
-				this.theme.fg(
-					"dim",
-					"Type to search agents • navigate • select • cancel",
-				),
-				w,
-			),
-			...this.input.render(w),
-		];
-		if (this.filtered.length === 0)
-			lines.push(
-				truncateToWidth(this.theme.fg("warning", "  No matching agents"), w),
-			);
-		else lines.push(...this.list.render(w));
-		return lines;
-	}
-
-	handleInput(data: string): void {
-		if (this.kb.matches(data, "tui.select.up")) {
-			this.move(-1);
-			return;
-		}
-		if (this.kb.matches(data, "tui.select.down")) {
-			this.move(1);
-			return;
-		}
-		if (this.kb.matches(data, "tui.select.confirm")) {
-			if (this.filtered.length > 0) this.onSelect(this.sel);
-			return;
-		}
-		if (this.kb.matches(data, "tui.select.cancel")) {
-			this.onCancel();
-			return;
-		}
-		const prev = this.input.getValue();
-		this.input.handleInput(data);
-		if (this.input.getValue() !== prev) this.applySearch();
-	}
-
-	invalidate(): void {
-		this.input.invalidate();
-		this.list.invalidate();
-	}
-
-	private applySearch(): void {
-		const q = this.input.getValue().toLowerCase();
-		this.filtered =
-			q.length === 0
-				? this.opts
-				: this.opts.filter((o) => o.label.toLowerCase().includes(q));
-		this.list = this.mkList(this.filtered);
-		this.syncSel();
-	}
-
-	private syncSel(): void {
-		const idx = this.filtered.findIndex((o) => o.value === this.sel);
-		if (idx >= 0) {
-			this.list.setSelectedIndex(idx);
-			return;
-		}
-		if (this.filtered.length > 0) {
-			this.sel = this.filtered[0].value;
-			this.list.setSelectedIndex(0);
-		}
-	}
-
-	private move(dir: -1 | 1): void {
-		if (this.filtered.length === 0) return;
-		const cur = this.filtered.findIndex((o) => o.value === this.sel);
-		const next =
-			((cur >= 0 ? cur : 0) + dir + this.filtered.length) %
-			this.filtered.length;
-		this.sel = this.filtered[next].value;
-		this.list.setSelectedIndex(next);
-	}
-
-	private mkList(opts: readonly SelectItem[]): SelectList {
-		return new SelectList([...opts], this.maxVis, {
-			selectedPrefix: (t: string) => this.theme.fg("accent", t),
-			selectedText: (t: string) => this.theme.fg("accent", t),
-			description: (t: string) => this.theme.fg("muted", t),
-			scrollInfo: (t: string) => this.theme.fg("dim", t),
-			noMatch: (t: string) => this.theme.fg("warning", t),
-		});
-	}
-}
-
 // ── Core agent selection ──
-
-async function loadSelectableAgents(): Promise<AgentDef[]> {
-	return (await loadAgentDefs()).filter(
-		(a) => a.type === "main" || a.type === "both",
-	);
-}
 
 async function selectMainAgent(
 	pi: ExtensionAPI,
@@ -597,11 +415,11 @@ async function selectMainAgent(
 	id: string | undefined,
 	cfg: Cfg,
 ): Promise<void> {
-	const agents = await loadSelectableAgents();
+	const agents = await loadAgentDefs();
 	const selected = id ?? (await promptForAgent(ctx, agents));
 	if (selected === undefined) return;
 	if (selected === null) {
-		await selectNone(pi, ctx, cfg);
+		await selectNone(pi, cfg);
 		return;
 	}
 	const agent = agents.find((a) => a.id === selected);
@@ -614,11 +432,7 @@ async function selectMainAgent(
 	updateFooter(cfg);
 }
 
-async function selectNone(
-	pi: ExtensionAPI,
-	ctx: MainCtx,
-	cfg: Cfg,
-): Promise<void> {
+async function selectNone(pi: ExtensionAPI, cfg: Cfg): Promise<void> {
 	clearActiveAgent(pi);
 	pi.appendEntry(STATE_ENTRY, { agentId: null });
 	updateFooter(cfg);
@@ -683,34 +497,30 @@ async function promptForAgent(
 		{ value: NO_AGENT_VALUE, label: "No agent" },
 		...agents.map((a) => ({
 			value: a.id,
-			label: `${a.id} — ${a.description}`,
+			label: a.id,
+			description: a.description,
 		})),
 	];
 	const selected = await ctx.ui.custom<string | undefined>(
-		(tui, theme, kb, done) => {
-			const sel = new AgentSelector({
-				allOptions: options,
-				currentId: currentAgentId,
-				keybindings: kb,
-				theme,
-				onSelect: (v) => done(v),
-				onCancel: () => done(undefined),
+		(tui, theme, _keybindings, done) => {
+			const list = new SelectList(options, Math.min(options.length, 10), {
+				selectedPrefix: (t: string) => theme.fg("accent", t),
+				selectedText: (t: string) => theme.fg("accent", t),
+				description: (t: string) => theme.fg("muted", t),
+				scrollInfo: (t: string) => theme.fg("dim", t),
+				noMatch: (t: string) => theme.fg("warning", t),
 			});
+			const index = options.findIndex(
+				(o) => o.value === (currentAgentId ?? NO_AGENT_VALUE),
+			);
+			list.setSelectedIndex(Math.max(0, index));
+			list.onSelect = (item) => done(item.value);
+			list.onCancel = () => done(undefined);
 			return {
-				get focused() {
-					return sel.focused;
-				},
-				set focused(v: boolean) {
-					sel.focused = v;
-				},
-				render(w: number) {
-					return sel.render(w);
-				},
-				invalidate() {
-					sel.invalidate();
-				},
-				handleInput(d: string) {
-					sel.handleInput(d);
+				render: (w: number) => list.render(w),
+				invalidate: () => list.invalidate(),
+				handleInput: (d: string) => {
+					list.handleInput(d);
 					tui.requestRender();
 				},
 			};
@@ -723,13 +533,23 @@ async function promptForAgent(
 // ── Session lifecycle ──
 
 async function restoreAgent(pi: ExtensionAPI, ctx: MainCtx): Promise<void> {
-	const agentId = sessionAgentId(ctx);
+	let agentId: string | null = null;
+	for (const entry of [...ctx.sessionManager.getEntries()].reverse()) {
+		if (
+			!isRecord(entry) ||
+			entry.type !== "custom" ||
+			entry.customType !== STATE_ENTRY
+		)
+			continue;
+		const data = entry.data;
+		agentId = isRecord(data) && typeof data.agentId === "string" ? data.agentId : null;
+		break;
+	}
 	if (agentId === null) {
 		clearActiveAgent(pi);
 		return;
 	}
-	const agents = await loadSelectableAgents();
-	const agent = agents.find((a) => a.id === agentId);
+	const agent = (await loadAgentDefs()).find((a) => a.id === agentId);
 	if (!agent) {
 		warn(ctx, `selected agent ${agentId} was not found`);
 		clearActiveAgent(pi);
@@ -763,7 +583,7 @@ export default async function mainAgentSelection(
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
 			if (trimmed.toLowerCase() === "none") {
-				await selectNone(pi, ctx as MainCtx, cfg);
+				await selectNone(pi, cfg);
 				return;
 			}
 			await selectMainAgent(pi, ctx as MainCtx, trimmed || undefined, cfg);

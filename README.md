@@ -15,7 +15,7 @@ This extension addresses the limitation by defaulting to `Alt+A` and making ever
 - **Coloured footer status** — shows the active agent in the footer with per-agent customisable colours
 - **Configurable footer prefix and "none" colour** — personalise the status line format
 - **Standalone agent selection**:
-  - Searchable agent selector UI with type-to-filter
+  - Scrollable agent selector UI
   - Agent selection persisted in the pi session as a custom entry
   - Model, thinking level, and tools application from agent definitions
   - Direct system prompt injection and active tool management
@@ -131,12 +131,12 @@ and finding relevant files. Do not edit or write files.
 
 | Field            | Type                                                                     | Description                                                   |
 | ---------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `type`           | `"main"` \| `"subagent"` \| `"both"`                                     | Where this agent can be used                                  |
+| `type`           | `"main"` \| `"subagent"` \| `"both"`                                     | Only `main` and `both` are shown by this extension            |
 | `description`    | `string`                                                                 | Shown in the selector                                         |
 | `model.id`       | `string`                                                                 | `provider/model` format (e.g., `anthropic/claude-sonnet-4-5`) |
 | `model.thinking` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | Thinking level                                                |
 | `tools`          | `string[]`                                                               | Tool whitelist (supports `*` wildcards, but not bare `*`)     |
-| `agents`         | `string[]`                                                               | Subagent IDs this agent can invoke                            |
+| `agents`         | `string[]`                                                               | Accepted for compatibility; ignored by this extension          |
 
 ## Footer colour hashing
 
