@@ -2,7 +2,7 @@
 
 Configurable agent selection extension for [pi](https://github.com/earendil-works/pi) — replaces the bundled `pi-agent-suite` main-agent-selection extension with a Windows-compatible default shortcut and coloured footer status.
 
-## Why this exists — not a bug, a terminal protocol limitation
+## Why this exists
 
 The bundled `pi-agent-suite` extension uses `Ctrl+Shift+A` as its default shortcut. This key combination **does not work on Windows Terminal** (and many other terminals) because those terminals send the same raw byte (`\x01`) for both `Ctrl+A` and `Ctrl+Shift+A` — the Shift modifier is lost in the legacy VT input protocol. Only terminals supporting the Kitty keyboard protocol or xterm modifyOtherKeys can distinguish the two.
 
