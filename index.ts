@@ -446,6 +446,30 @@ async function selectNone(pi: ExtensionAPI, cfg: Cfg): Promise<void> {
 	updateFooter(cfg);
 }
 
+async function cycleMainAgent(
+	pi: ExtensionAPI,
+	ctx: MainCtx,
+	cfg: Cfg,
+): Promise<void> {
+	const agents = await loadAgentDefs();
+	if (agents.length === 0) {
+		warn(ctx, "no main agents found");
+		return;
+	}
+	const index =
+		currentAgentId === null
+			? -1
+			: agents.findIndex((a) => a.id === currentAgentId);
+	const agent = agents[index + 1];
+	if (agent === undefined) {
+		await selectNone(pi, cfg);
+		return;
+	}
+	const applied = await applyAgent(pi, ctx, agent);
+	pi.appendEntry(STATE_ENTRY, { agentId: applied ? agent.id : null });
+	updateFooter(cfg);
+}
+
 async function applyAgent(
 	pi: ExtensionAPI,
 	ctx: MainCtx,
@@ -615,9 +639,9 @@ export default async function mainAgentSelection(
 		pi.registerShortcut(
 			cfg.shortcut as Parameters<typeof pi.registerShortcut>[0],
 			{
-				description: "Select the main agent",
+				description: "Cycle the main agent",
 				handler: async (ctx) => {
-					await selectMainAgent(pi, ctx as MainCtx, undefined, cfg);
+					await cycleMainAgent(pi, ctx as MainCtx, cfg);
 				},
 			},
 		);

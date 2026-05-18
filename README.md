@@ -4,9 +4,9 @@ Standalone main-agent selector for [pi](https://github.com/earendil-works/pi). I
 
 ## Features
 
-- `/agent` command and configurable keyboard shortcut
+- `/agent` command opens the scrollable selector
+- Configurable shortcut cycles through agents
 - Default shortcut: `Alt+A`, because many terminals cannot distinguish `Ctrl+Shift+letter` from `Ctrl+letter`
-- Scrollable agent selector
 - Direct prompt, model, thinking, and tool application from agent definitions
 - Footer status showing the active agent
 - Custom footer colours with deterministic SHA-256 hash colour fallback
@@ -55,7 +55,7 @@ The package includes defaults in `config.json`. To override them without editing
 | ------------------ | ----------------- | ------------------------------------------------- |
 | `enabled`          | `true`            | Enables this extension                            |
 | `command`          | `"agent"`         | Slash command name, without `/`                   |
-| `shortcut`         | `"alt+a"`         | Shortcut key; set to `null` to disable            |
+| `shortcut`         | `"alt+a"`         | Shortcut key for cycling agents; set to `null` to disable |
 | `footer.enabled`   | `true`            | Shows agent status in the footer                  |
 | `footer.statusKey` | `"current-agent"` | Status segment key passed to `ctx.ui.setStatus()` |
 | `footer.prefix`    | `"Agent:"`        | Text before the agent name                        |

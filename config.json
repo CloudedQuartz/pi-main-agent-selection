@@ -2,7 +2,7 @@
   "_documentation": {
     "enabled": "Set to false to disable the extension entirely.",
     "command": "Slash command name (without /). Changes take effect after /reload.",
-    "shortcut": "Keyboard shortcut for agent selection. Set to null to disable. Must be a key format understood by pi (e.g. 'alt+a', 'ctrl+a', 'f2'). Ctrl+Shift+letter combos require Kitty keyboard protocol or xterm modifyOtherKeys and do NOT work on Windows Terminal.",
+    "shortcut": "Keyboard shortcut for cycling the active agent. Set to null to disable. Must be a key format understood by pi (e.g. 'alt+a', 'ctrl+a', 'f2'). Ctrl+Shift+letter combos require Kitty keyboard protocol or xterm modifyOtherKeys and do NOT work on Windows Terminal.",
     "footer": {
       "enabled": "Show coloured agent status in the footer.",
       "statusKey": "Status bar key used by ctx.ui.setStatus().",
