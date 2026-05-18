@@ -14,7 +14,11 @@ import {
 	getAgentDir,
 	parseFrontmatter,
 } from "@earendil-works/pi-coding-agent";
-import { type Component, type SelectItem, SelectList } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	type SelectItem,
+	SelectList,
+} from "@earendil-works/pi-tui";
 
 // ── Constants & types ──
 
@@ -119,6 +123,40 @@ function suiteDir(sub: string): string {
 
 // ── Config ──
 
+const HEX = /^#[\da-f]{6}$/i;
+
+function bool(v: unknown, fallback: boolean): boolean {
+	return typeof v === "boolean" ? v : fallback;
+}
+function nonEmptyString(v: unknown, fallback: string): string {
+	return typeof v === "string" && v.trim() ? v.trim() : fallback;
+}
+function cleanText(v: unknown, fallback: string): string {
+	return typeof v === "string"
+		? v
+				.replace(/[\r\n\t]/g, " ")
+				.replace(/ +/g, " ")
+				.trim()
+		: fallback;
+}
+function hex(v: unknown, fallback: string): string {
+	return typeof v === "string" && HEX.test(v) ? v : fallback;
+}
+function colors(v: unknown): Record<string, string> {
+	return isRecord(v)
+		? Object.fromEntries(
+				Object.entries(v).filter(
+					(e): e is [string, string] =>
+						typeof e[1] === "string" && HEX.test(e[1]),
+				),
+			)
+		: { ...DEFAULT_CFG.footer.colors };
+}
+function shortcut(v: unknown, fallback: string | null): string | null {
+	if (v === null || fallback === null) return null;
+	return nonEmptyString(v, fallback);
+}
+
 async function readConfig(): Promise<Cfg> {
 	let raw: string;
 	try {
@@ -137,52 +175,24 @@ async function readConfig(): Promise<Cfg> {
 	}
 	if (!isRecord(parsed)) return DEFAULT_CFG;
 	const p = parsed;
-	const enabled =
-		typeof p.enabled === "boolean" ? p.enabled : DEFAULT_CFG.enabled;
-	const command =
-		typeof p.command === "string" && p.command.trim()
-			? p.command.trim()
-			: DEFAULT_CFG.command;
-	const shortcut =
-		p.shortcut === null
-			? null
-			: typeof p.shortcut === "string" && p.shortcut.trim()
-				? p.shortcut.trim()
-				: DEFAULT_CFG.shortcut;
-	let footer = DEFAULT_CFG.footer;
-	if (isRecord(p.footer)) {
-		const f = p.footer;
-		const clean = (s: string) =>
-			s
-				.replace(/[\r\n\t]/g, " ")
-				.replace(/ +/g, " ")
-				.trim();
-		footer = {
-			enabled:
-				typeof f.enabled === "boolean" ? f.enabled : DEFAULT_CFG.footer.enabled,
-			statusKey:
-				typeof f.statusKey === "string" && f.statusKey.trim()
-					? f.statusKey.trim()
-					: DEFAULT_CFG.footer.statusKey,
-			prefix:
-				typeof f.prefix === "string"
-					? clean(f.prefix)
-					: DEFAULT_CFG.footer.prefix,
-			colors: isRecord(f.colors)
-				? Object.fromEntries(
-						Object.entries(f.colors).filter(
-							(e): e is [string, string] =>
-								typeof e[1] === "string" && /^#[\da-f]{6}$/i.test(e[1]),
-						),
-					)
-				: { ...DEFAULT_CFG.footer.colors },
-			noneColor:
-				typeof f.noneColor === "string" && /^#[\da-f]{6}$/i.test(f.noneColor)
-					? f.noneColor
-					: DEFAULT_CFG.footer.noneColor,
-		};
-	}
-	return { enabled, command, shortcut, footer };
+	const footer = isRecord(p.footer)
+		? {
+				enabled: bool(p.footer.enabled, DEFAULT_CFG.footer.enabled),
+				statusKey: nonEmptyString(
+					p.footer.statusKey,
+					DEFAULT_CFG.footer.statusKey,
+				),
+				prefix: cleanText(p.footer.prefix, DEFAULT_CFG.footer.prefix),
+				colors: colors(p.footer.colors),
+				noneColor: hex(p.footer.noneColor, DEFAULT_CFG.footer.noneColor),
+			}
+		: DEFAULT_CFG.footer;
+	return {
+		enabled: bool(p.enabled, DEFAULT_CFG.enabled),
+		command: nonEmptyString(p.command, DEFAULT_CFG.command),
+		shortcut: shortcut(p.shortcut, DEFAULT_CFG.shortcut),
+		footer,
+	};
 }
 
 // ── Agent definitions ──
@@ -542,7 +552,8 @@ async function restoreAgent(pi: ExtensionAPI, ctx: MainCtx): Promise<void> {
 		)
 			continue;
 		const data = entry.data;
-		agentId = isRecord(data) && typeof data.agentId === "string" ? data.agentId : null;
+		agentId =
+			isRecord(data) && typeof data.agentId === "string" ? data.agentId : null;
 		break;
 	}
 	if (agentId === null) {
