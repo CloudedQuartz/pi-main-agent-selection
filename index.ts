@@ -7,8 +7,8 @@
  * Disable the bundled extension by setting "enabled": false in
  * ~/.pi/agent/agent-suite/agent-selection/config.json.
  *
- * Default shortcut is Alt+A (works on Windows Terminal, unlike Ctrl+Shift+A
- * which cannot be distinguished from Ctrl+A in legacy VT input).
+ * Default shortcut is Alt+A (Ctrl+Shift+A is indistinguishable from Ctrl+A
+ * in the legacy VT input protocol used by most terminals).
  */
 
 import { createHash } from "node:crypto";
@@ -33,9 +33,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
+// --- Configuration ---
 
 const EXTENSION_DIR = "main-agent-selection";
 const CONFIG_FILE_NAME = "config.json";
@@ -75,9 +73,7 @@ const DEFAULT_CONFIG: ExtensionConfig = {
 
 const RESET = "\x1b[0m";
 
-// ---------------------------------------------------------------------------
-// Agent definition types & loader (inlined from agent-registry)
-// ---------------------------------------------------------------------------
+// --- Agent definition types & loader (inlined from agent-registry) ---
 
 const AGENT_FILE_EXTENSION = ".md";
 const AGENT_TYPES = ["main", "subagent", "both"] as const;
@@ -135,7 +131,12 @@ async function loadAgentDefinitions(): Promise<AgentDefinition[]> {
 }
 
 async function resolveAgentsDir(): Promise<
-	{ readonly path: string; readonly entries: readonly string[]; readonly source: "suite" | "legacy" } | undefined
+	| {
+			readonly path: string;
+			readonly entries: readonly string[];
+			readonly source: "suite" | "legacy";
+	  }
+	| undefined
 > {
 	const suiteAgentsDir = join(
 		getSuiteExtensionDir("agent-selection"),
@@ -311,10 +312,8 @@ function isThinkingValue(value: unknown): value is ThinkingValue {
 	);
 }
 
-// ---------------------------------------------------------------------------
-// Agent runtime composition (inlined from agent-runtime-composition)
+// --- Agent runtime composition (inlined from agent-runtime-composition) ---
 // Uses the same global property name for compatibility with other suite extensions.
-// ---------------------------------------------------------------------------
 
 const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV5";
 const MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT =
@@ -545,9 +544,7 @@ function areStringArraysEqual(
 	return left.every((value, index) => value === right[index]);
 }
 
-// ---------------------------------------------------------------------------
-// Tool policy resolution (inlined from tool-policy)
-// ---------------------------------------------------------------------------
+// --- Tool policy resolution (inlined from tool-policy) ---
 
 function resolveToolPolicy(
 	patterns: readonly string[],
@@ -607,9 +604,7 @@ function isFullWildcard(pattern: string): boolean {
 	return pattern.includes("*") && pattern.replaceAll("*", "").length === 0;
 }
 
-// ---------------------------------------------------------------------------
-// State persistence
-// ---------------------------------------------------------------------------
+// --- State persistence ---
 
 interface SelectedAgentState {
 	readonly cwd: string;
@@ -703,7 +698,9 @@ function parseSelectedAgentState(
 async function readSelectedAgentStateFile(
 	cwd: string,
 ): Promise<
-	{ readonly kind: "missing" } | { readonly kind: "valid"; readonly content: string } | { readonly kind: "invalid"; readonly issue: string }
+	| { readonly kind: "missing" }
+	| { readonly kind: "valid"; readonly content: string }
+	| { readonly kind: "invalid"; readonly issue: string }
 > {
 	try {
 		return {
@@ -761,9 +758,7 @@ function selectedAgentStateFileName(cwd: string): string {
 		.digest(SELECTED_AGENT_STATE_HASH_ENCODING);
 }
 
-// ---------------------------------------------------------------------------
-// Suite storage helpers (inlined from agent-suite-storage)
-// ---------------------------------------------------------------------------
+// --- Suite storage helpers (inlined from agent-suite-storage) ---
 
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const DEFAULT_AGENT_SUITE_DIR = "agent-suite";
@@ -790,9 +785,7 @@ function expandHomeDirectory(path: string): string {
 	return path;
 }
 
-// ---------------------------------------------------------------------------
-// Config loading
-// ---------------------------------------------------------------------------
+// --- Config loading ---
 
 function configFilePath(): string {
 	return join(getExtensionDir(), CONFIG_FILE_NAME);
@@ -869,9 +862,7 @@ function parseFooterConfig(value: unknown): FooterConfig {
 	return { enabled, statusKey, prefix, colors, noneColor };
 }
 
-// ---------------------------------------------------------------------------
-// Footer/status helpers (from current-agent-status)
-// ---------------------------------------------------------------------------
+// --- Footer/status helpers (from current-agent-status) ---
 
 function formatAgentStatus(
 	agentId: string | null,
@@ -969,9 +960,7 @@ function isHexColor(value: string): boolean {
 	return /^#[\da-f]{6}$/i.test(value);
 }
 
-// ---------------------------------------------------------------------------
-// Session replacement handoff
-// ---------------------------------------------------------------------------
+// --- Session replacement handoff ---
 
 const SESSION_REPLACEMENT_HANDOFFS_PROPERTY =
 	"__piHarnessMainAgentSelectionSessionReplacementHandoffs";
@@ -1107,9 +1096,7 @@ function consumeSessionReplacementHandoff(
 	return { found: true, activeAgentId };
 }
 
-// ---------------------------------------------------------------------------
-// Context types
-// ---------------------------------------------------------------------------
+// --- Context types ---
 
 interface MainAgentContext {
 	readonly cwd: string;
@@ -1153,9 +1140,7 @@ interface MainAgentSelectorKeybindings {
 	matches(data: string, keybinding: MainAgentSelectorKeybinding): boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Searchable agent selector UI
-// ---------------------------------------------------------------------------
+// --- Searchable agent selector UI ---
 
 const NO_AGENT_LABEL = "No agent";
 const NO_AGENT_ARGUMENT = "none";
@@ -1327,9 +1312,7 @@ class SearchableAgentSelector implements Component, Focusable {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Core agent selection logic
-// ---------------------------------------------------------------------------
+// --- Core agent selection logic ---
 
 async function loadSelectableAgents(): Promise<AgentDefinition[]> {
 	const agents = await loadAgentDefinitions();
@@ -1534,9 +1517,7 @@ async function promptForAgent(
 	return selected === NO_AGENT_VALUE ? null : selected;
 }
 
-// ---------------------------------------------------------------------------
-// Session lifecycle
-// ---------------------------------------------------------------------------
+// --- Session lifecycle ---
 
 function isChildSubagentProcess(): boolean {
 	return process.env.PI_SUBAGENT_AGENT_ID !== undefined;
@@ -1580,9 +1561,7 @@ async function restoreSelectedMainAgent(
 	await applyAgentSelection(pi, mainContext, agent);
 }
 
-// ---------------------------------------------------------------------------
-// Footer status refresh
-// ---------------------------------------------------------------------------
+// --- Footer status refresh ---
 
 async function refreshFooterStatus(
 	ctx: unknown,
@@ -1620,9 +1599,7 @@ function setFooterStatus(
 	ctx.ui.setStatus(config.statusKey, formatAgentStatus(agentId, config));
 }
 
-// ---------------------------------------------------------------------------
-// Extension entry point
-// ---------------------------------------------------------------------------
+// --- Extension entry point ---
 
 export default async function mainAgentSelection(
 	pi: ExtensionAPI,
@@ -1656,12 +1633,15 @@ export default async function mainAgentSelection(
 
 	// Register configurable shortcut
 	if (config.shortcut !== null) {
-		pi.registerShortcut(config.shortcut as Parameters<typeof pi.registerShortcut>[0], {
-			description: "Select the main agent",
-			handler: async (ctx) => {
-				await selectMainAgent(pi, ctx as MainAgentContext, undefined, config);
+		pi.registerShortcut(
+			config.shortcut as Parameters<typeof pi.registerShortcut>[0],
+			{
+				description: "Select the main agent",
+				handler: async (ctx) => {
+					await selectMainAgent(pi, ctx as MainAgentContext, undefined, config);
+				},
 			},
-		});
+		);
 	}
 
 	// Session lifecycle
@@ -1724,9 +1704,7 @@ export default async function mainAgentSelection(
 	});
 }
 
-// ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
+// --- Utility ---
 
 function normalizeCwd(cwd: string): string {
 	return resolve(cwd);

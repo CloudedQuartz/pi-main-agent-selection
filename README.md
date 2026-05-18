@@ -2,11 +2,11 @@
 
 Configurable agent selection extension for [pi](https://github.com/earendil-works/pi) — replaces the bundled `pi-agent-suite` main-agent-selection extension with a Windows-compatible default shortcut and coloured footer status.
 
-## Why this exists
+## Why this exists — not a bug, a terminal protocol limitation
 
-The bundled `pi-agent-suite` extension uses `Ctrl+Shift+A` as its default shortcut. This key combination **does not work on Windows Terminal** (and many other terminals) because those terminals send the same raw byte (`\x01`) for both `Ctrl+A` and `Ctrl+Shift+A` — the Shift modifier is lost. Only terminals supporting the Kitty keyboard protocol or xterm modifyOtherKeys can distinguish the two.
+The bundled `pi-agent-suite` extension uses `Ctrl+Shift+A` as its default shortcut. This key combination **does not work on Windows Terminal** (and many other terminals) because those terminals send the same raw byte (`\x01`) for both `Ctrl+A` and `Ctrl+Shift+A` — the Shift modifier is lost in the legacy VT input protocol. Only terminals supporting the Kitty keyboard protocol or xterm modifyOtherKeys can distinguish the two.
 
-This extension fixes the problem by defaulting to `Alt+A` and making every aspect configurable.
+This extension addresses the limitation by defaulting to `Alt+A` and making every aspect configurable.
 
 ## Features
 
@@ -20,7 +20,7 @@ This extension fixes the problem by defaulting to `Alt+A` and making every aspec
   - Session replacement handoff (`/new`, `/fork`, `/resume`)
   - Model, thinking level, and tools application from agent definitions
   - Runtime composition (system prompt injection, active tool management)
-- **Self-contained** — no imports from the `pi-agent-suite` package; all shared logic is inlined
+- **Self-contained** — no imports from the `pi-agent-suite` package; shared logic inlined except `parseFrontmatter` and `getAgentDir` imported from the pi SDK
 
 ## Configuration
 
@@ -44,16 +44,16 @@ Edit `~/.pi/agent/extensions/main-agent-selection/config.json`:
 }
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | `boolean` | `true` | Disable the entire extension |
-| `command` | `string` | `"agent"` | Slash command name (without `/`) |
-| `shortcut` | `string \| null` | `"alt+a"` | Keyboard shortcut. Set to `null` to disable. See [Key format](#key-format) |
-| `footer.enabled` | `boolean` | `true` | Show agent status in the footer |
-| `footer.statusKey` | `string` | `"current-agent"` | `ctx.ui.setStatus()` key |
-| `footer.prefix` | `string` | `"Agent:"` | Text before the agent name |
-| `footer.colors` | `object` | `{}` | Map agent IDs to `#RRGGBB` colours. Unlisted agents get a deterministic hash colour |
-| `footer.noneColor` | `string` | `"#6B7280"` | Colour when no agent is selected |
+| Key                | Type             | Default           | Description                                                                         |
+| ------------------ | ---------------- | ----------------- | ----------------------------------------------------------------------------------- |
+| `enabled`          | `boolean`        | `true`            | Disable the entire extension                                                        |
+| `command`          | `string`         | `"agent"`         | Slash command name (without `/`)                                                    |
+| `shortcut`         | `string \| null` | `"alt+a"`         | Keyboard shortcut. Set to `null` to disable. See [Key format](#key-format)          |
+| `footer.enabled`   | `boolean`        | `true`            | Show agent status in the footer                                                     |
+| `footer.statusKey` | `string`         | `"current-agent"` | `ctx.ui.setStatus()` key                                                            |
+| `footer.prefix`    | `string`         | `"Agent:"`        | Text before the agent name                                                          |
+| `footer.colors`    | `object`         | `{}`              | Map agent IDs to `#RRGGBB` colours. Unlisted agents get a deterministic hash colour |
+| `footer.noneColor` | `string`         | `"#6B7280"`       | Colour when no agent is selected                                                    |
 
 Run `/reload` after editing config.
 
@@ -130,14 +130,14 @@ and finding relevant files. Do not edit or write files.
 
 ### Agent frontmatter fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | `"main"` \| `"subagent"` \| `"both"` | Where this agent can be used |
-| `description` | `string` | Shown in the selector |
-| `model.id` | `string` | `provider/model` format (e.g., `anthropic/claude-sonnet-4-5`) |
-| `model.thinking` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | Thinking level |
-| `tools` | `string[]` | Tool whitelist (supports `*` wildcards, but not bare `*`) |
-| `agents` | `string[]` | Subagent IDs this agent can invoke |
+| Field            | Type                                                                     | Description                                                   |
+| ---------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| `type`           | `"main"` \| `"subagent"` \| `"both"`                                     | Where this agent can be used                                  |
+| `description`    | `string`                                                                 | Shown in the selector                                         |
+| `model.id`       | `string`                                                                 | `provider/model` format (e.g., `anthropic/claude-sonnet-4-5`) |
+| `model.thinking` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | Thinking level                                                |
+| `tools`          | `string[]`                                                               | Tool whitelist (supports `*` wildcards, but not bare `*`)     |
+| `agents`         | `string[]`                                                               | Subagent IDs this agent can invoke                            |
 
 ## Footer colour hashing
 
