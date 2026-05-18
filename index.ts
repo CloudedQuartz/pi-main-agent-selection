@@ -4,8 +4,8 @@
  * Default shortcut: Alt+A (Ctrl+Shift+A is indistinguishable from Ctrl+A in legacy VT).
  */
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { readdir, readFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { env } from "node:process";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -27,7 +27,7 @@ import {
 // ── Constants & types ──
 
 const EXT_DIR = "main-agent-selection";
-const HANDOFF_PROP = "__piMainAgentSelectionHandoffs";
+const STATE_ENTRY = "main-agent-selection";
 const NO_AGENT_VALUE = "__none__";
 const RESET = "\x1b[0m";
 const AGENT_TYPES = new Set(["main", "subagent", "both"]);
@@ -82,7 +82,7 @@ type StatusCtx = {
 };
 interface MainCtx extends StatusCtx {
 	cwd: string;
-	sessionManager: { getSessionFile(): string | undefined };
+	sessionManager: { getEntries(): readonly unknown[] };
 	ui: StatusCtx["ui"] & {
 		custom?<T>(
 			factory: (
@@ -347,57 +347,22 @@ function resolveToolPolicy(
 	return { tools: resolved };
 }
 
-// ── State persistence ──
+// ── Session state ──
 
-function stateHash(cwd: string): string {
-	return createHash("sha256").update(cwd).digest("hex");
-}
-
-async function writeState(cwd: string, agentId: string | null): Promise<void> {
-	const dir = join(suiteDir("agent-selection"), "state");
-	await mkdir(dir, { recursive: true });
-	await writeFile(
-		join(dir, `${stateHash(cwd)}.json`),
-		JSON.stringify({ cwd, activeAgentId: agentId }, null, 2),
-	);
-}
-
-async function loadState(
-	cwd: string,
-): Promise<{ agentId: string | null } | undefined> {
-	const hash = stateHash(cwd);
-	for (const base of [
-		suiteDir("agent-selection"),
-		join(getAgentDir(), "agent-selection"),
-	]) {
-		try {
-			const p = JSON.parse(
-				await readFile(join(base, "state", `${hash}.json`), "utf8"),
-			);
-			if (
-				isRecord(p) &&
-				p.cwd === cwd &&
-				(typeof p.activeAgentId === "string" || p.activeAgentId === null)
-			)
-				return { agentId: p.activeAgentId as string | null };
-		} catch (e) {
-			if (!isEnoent(e)) return undefined;
-		}
+function sessionAgentId(ctx: MainCtx): string | null {
+	for (const entry of [...ctx.sessionManager.getEntries()].reverse()) {
+		if (
+			!isRecord(entry) ||
+			entry.type !== "custom" ||
+			entry.customType !== STATE_ENTRY
+		)
+			continue;
+		const data = entry.data;
+		return isRecord(data) && typeof data.agentId === "string"
+			? data.agentId
+			: null;
 	}
-	return undefined;
-}
-
-// ── Session handoff ──
-
-function handoffStore(): Map<string, string | null> {
-	return ((globalThis as Record<string, unknown>)[HANDOFF_PROP] ??= new Map<
-		string,
-		string | null
-	>()) as Map<string, string | null>;
-}
-
-function isHandoff(reason?: string): boolean {
-	return reason === "new" || reason === "fork" || reason === "resume";
+	return null;
 }
 
 // ── Colour helpers ──
@@ -645,7 +610,7 @@ async function selectMainAgent(
 		return;
 	}
 	const applied = await applyAgent(pi, ctx, agent);
-	await writeState(resolve(ctx.cwd), applied ? agent.id : null);
+	pi.appendEntry(STATE_ENTRY, { agentId: applied ? agent.id : null });
 	updateFooter(cfg);
 }
 
@@ -655,7 +620,7 @@ async function selectNone(
 	cfg: Cfg,
 ): Promise<void> {
 	clearActiveAgent(pi);
-	await writeState(resolve(ctx.cwd), null);
+	pi.appendEntry(STATE_ENTRY, { agentId: null });
 	updateFooter(cfg);
 }
 
@@ -758,16 +723,15 @@ async function promptForAgent(
 // ── Session lifecycle ──
 
 async function restoreAgent(pi: ExtensionAPI, ctx: MainCtx): Promise<void> {
-	const cwd = resolve(ctx.cwd);
-	const state = await loadState(cwd);
-	if (!state || state.agentId === null) {
+	const agentId = sessionAgentId(ctx);
+	if (agentId === null) {
 		clearActiveAgent(pi);
 		return;
 	}
 	const agents = await loadSelectableAgents();
-	const agent = agents.find((a) => a.id === state.agentId);
+	const agent = agents.find((a) => a.id === agentId);
 	if (!agent) {
-		warn(ctx, `selected agent ${state.agentId} was not found`);
+		warn(ctx, `selected agent ${agentId} was not found`);
 		clearActiveAgent(pi);
 		return;
 	}
@@ -818,36 +782,10 @@ export default async function mainAgentSelection(
 		);
 	}
 
-	pi.on("session_start", async (event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		footerCtx = ctx as StatusCtx;
 		if (process.env.PI_SUBAGENT_AGENT_ID !== undefined) return;
-		const mx = ctx as MainCtx;
-		const reason = (event as { reason?: string }).reason;
-		// Handoff for fork/new/resume within same process
-		if (isHandoff(reason)) {
-			const e = event as { targetSessionFile?: string };
-			const key =
-				e.targetSessionFile ??
-				mx.sessionManager.getSessionFile() ??
-				resolve(mx.cwd);
-			const stored = handoffStore().get(key) ?? undefined;
-			if (stored !== undefined) {
-				handoffStore().delete(key);
-				if (stored === null) {
-					clearActiveAgent(pi);
-				} else {
-					const agents = await loadSelectableAgents();
-					const agent = agents.find((a) => a.id === stored);
-					if (agent) await applyAgent(pi, mx, agent);
-					else clearActiveAgent(pi);
-				}
-				updateFooter(cfg);
-				return;
-			}
-		}
-		if (reason === "startup" || reason === "reload" || reason === "resume") {
-			await restoreAgent(pi, mx);
-		}
+		await restoreAgent(pi, ctx as MainCtx);
 		updateFooter(cfg);
 	});
 
@@ -857,17 +795,7 @@ export default async function mainAgentSelection(
 			sx.ui.setStatus(cfg.footer.statusKey, undefined);
 		}
 		if (footerCtx === sx) footerCtx = undefined;
-		if (process.env.PI_SUBAGENT_AGENT_ID !== undefined) return;
-		// Capture handoff for session replacement
-		const e = _event as { reason?: string; targetSessionFile?: string };
-		const mx = ctx as MainCtx;
-		if (isHandoff(e.reason)) {
-			const key =
-				e.targetSessionFile ??
-				mx.sessionManager.getSessionFile() ??
-				resolve(mx.cwd);
-			handoffStore().set(key, currentAgentId);
-		}
+		currentAgentId = null;
 		baselineActiveTools = undefined;
 		activeAgentPrompt = undefined;
 	});

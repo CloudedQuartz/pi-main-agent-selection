@@ -14,12 +14,11 @@ This extension addresses the limitation by defaulting to `Alt+A` and making ever
 - **Configurable command** — defaults to `/agent`; rename if you prefer `/switch`, `/model`, etc.
 - **Coloured footer status** — shows the active agent in the footer with per-agent customisable colours
 - **Configurable footer prefix and "none" colour** — personalise the status line format
-- **Full parity** with the bundled extension:
+- **Standalone agent selection**:
   - Searchable agent selector UI with type-to-filter
-  - Persisted agent selection per working directory
-  - Session replacement handoff (`/new`, `/fork`, `/resume`)
+  - Agent selection persisted in the pi session as a custom entry
   - Model, thinking level, and tools application from agent definitions
-  - Runtime composition (system prompt injection, active tool management)
+  - Direct system prompt injection and active tool management
 - **Self-contained** — no imports from the `pi-agent-suite` package; shared logic inlined except `parseFrontmatter` and `getAgentDir` imported from the pi SDK
 
 ## Configuration
@@ -145,19 +144,13 @@ Agent IDs not listed in `footer.colors` get a deterministic colour derived from 
 
 ## State persistence
 
-Selected agent state is stored per working directory in:
+Selected agent state is stored in the pi session file as a custom entry:
 
-```
-~/.pi/agent/agent-suite/agent-selection/state/<sha256(cwd)>.json
-```
-
-With legacy fallback to:
-
-```
-~/.pi/agent/agent-selection/state/<sha256(cwd)>.json
+```ts
+pi.appendEntry("main-agent-selection", { agentId });
 ```
 
-State is automatically restored on startup, `/reload`, and `/resume`. Session replacement flows (`/new`, `/fork`) carry the selected agent forward via an in-process handoff.
+On session start, the extension scans session entries backwards and restores the last `main-agent-selection` entry. No separate state directory or in-process handoff map is used.
 
 ## Development
 
