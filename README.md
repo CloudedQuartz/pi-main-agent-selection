@@ -1,25 +1,36 @@
 # pi-main-agent-selection
 
-Configurable agent selection extension for [pi](https://github.com/earendil-works/pi) — replaces the bundled `pi-agent-suite` main-agent-selection extension with a Windows-compatible default shortcut and coloured footer status.
-
-## Why this exists
-
-The bundled `pi-agent-suite` extension uses `Ctrl+Shift+A` as its default shortcut. This key combination **does not work on Windows Terminal** (and many other terminals) because those terminals send the same raw byte (`\x01`) for both `Ctrl+A` and `Ctrl+Shift+A` — the Shift modifier is lost in the legacy VT input protocol. Only terminals supporting the Kitty keyboard protocol or xterm modifyOtherKeys can distinguish the two.
-
-This extension addresses the limitation by defaulting to `Alt+A` and making every aspect configurable.
+Standalone main-agent selector for [pi](https://github.com/earendil-works/pi). It replaces the bundled `pi-agent-suite` selector with a configurable shortcut and integrated coloured footer status, without depending on pi-agent-suite's runtime composition system.
 
 ## Features
 
-- **Configurable shortcut** — defaults to `Alt+A`; change to any key combo or disable entirely
-- **Configurable command** — defaults to `/agent`; rename if you prefer `/switch`, `/model`, etc.
-- **Coloured footer status** — shows the active agent in the footer with per-agent customisable colours
-- **Configurable footer prefix and "none" colour** — personalise the status line format
-- **Standalone agent selection**:
-  - Scrollable agent selector UI
-  - Agent selection persisted in the pi session as a custom entry
-  - Model, thinking level, and tools application from agent definitions
-  - Direct system prompt injection and active tool management
-- **Self-contained** — no imports from the `pi-agent-suite` package; shared logic inlined except `parseFrontmatter` and `getAgentDir` imported from the pi SDK
+- `/agent` command and configurable keyboard shortcut
+- Default shortcut: `Alt+A`, because many terminals cannot distinguish `Ctrl+Shift+letter` from `Ctrl+letter`
+- Scrollable agent selector
+- Direct prompt, model, thinking, and tool application from agent definitions
+- Footer status showing the active agent
+- Custom footer colours with deterministic SHA-256 hash colour fallback
+- Session persistence through pi custom session entries
+
+## Installation
+
+Place or clone this directory at:
+
+```text
+~/.pi/agent/extensions/main-agent-selection/
+```
+
+Disable the bundled pi-agent-suite selector in `~/.pi/agent/agent-suite/agent-selection/config.json`:
+
+```json
+{ "enabled": false }
+```
+
+Then remove `"extensions/main-agent-selection/index.ts"` from the `pi-agent-suite` package entry in `~/.pi/agent/settings.json`, or set that package's `extensions` array to `[]`.
+
+If you previously used `~/.pi/agent/extensions/current-agent-status.ts`, disable it too; this extension includes footer status.
+
+Run `/reload` in pi after changing extension or config files.
 
 ## Configuration
 
@@ -34,80 +45,35 @@ Edit `~/.pi/agent/extensions/main-agent-selection/config.json`:
     "enabled": true,
     "statusKey": "current-agent",
     "prefix": "Agent:",
-    "colors": {
-      "Explore": "#50B868",
-      "Plan": "#F8C038"
-    },
+    "colors": {},
     "noneColor": "#6B7280"
   }
 }
 ```
 
-| Key                | Type             | Default           | Description                                                                         |
-| ------------------ | ---------------- | ----------------- | ----------------------------------------------------------------------------------- |
-| `enabled`          | `boolean`        | `true`            | Disable the entire extension                                                        |
-| `command`          | `string`         | `"agent"`         | Slash command name (without `/`)                                                    |
-| `shortcut`         | `string \| null` | `"alt+a"`         | Keyboard shortcut. Set to `null` to disable. See [Key format](#key-format)          |
-| `footer.enabled`   | `boolean`        | `true`            | Show agent status in the footer                                                     |
-| `footer.statusKey` | `string`         | `"current-agent"` | `ctx.ui.setStatus()` key                                                            |
-| `footer.prefix`    | `string`         | `"Agent:"`        | Text before the agent name                                                          |
-| `footer.colors`    | `object`         | `{}`              | Map agent IDs to `#RRGGBB` colours. Unlisted agents get a deterministic hash colour |
-| `footer.noneColor` | `string`         | `"#6B7280"`       | Colour when no agent is selected                                                    |
+| Key                | Default           | Description                                       |
+| ------------------ | ----------------- | ------------------------------------------------- |
+| `enabled`          | `true`            | Enables this extension                            |
+| `command`          | `"agent"`         | Slash command name, without `/`                   |
+| `shortcut`         | `"alt+a"`         | Shortcut key; set to `null` to disable            |
+| `footer.enabled`   | `true`            | Shows agent status in the footer                  |
+| `footer.statusKey` | `"current-agent"` | Status segment key passed to `ctx.ui.setStatus()` |
+| `footer.prefix`    | `"Agent:"`        | Text before the agent name                        |
+| `footer.colors`    | `{}`              | Agent ID to `#RRGGBB` colour map                  |
+| `footer.noneColor` | `"#6B7280"`       | Colour used when no agent is selected             |
 
-Run `/reload` after editing config.
+Unlisted agents get a deterministic colour from a SHA-256 hash of the agent ID.
 
-### Key format
-
-Uses the same key format as pi's `keybindings.json`:
-
-- **Letters:** `a`–`z`
-- **Modifiers:** `ctrl+`, `shift+`, `alt+` (combinable)
-- **Special keys:** `escape`, `enter`, `tab`, `f1`–`f12`, etc.
-- Examples: `alt+a`, `ctrl+shift+p`, `f2`
-
-> **Windows Terminal users:** `Ctrl+Shift+letter` combos cannot be distinguished from `Ctrl+letter`. Use `alt+` combos or function keys instead.
-
-## Installation
-
-### 1. Add the extension
-
-Place this directory at `~/.pi/agent/extensions/main-agent-selection/` (or clone it there).
-
-### 2. Disable the bundled extension
-
-Edit `~/.pi/agent/agent-suite/agent-selection/config.json`:
-
-```json
-{ "enabled": false }
-```
-
-### 3. Remove the bundled extension from settings
-
-In `~/.pi/agent/settings.json`, remove `"extensions/main-agent-selection/index.ts"` from the `pi-agent-suite` package entry, or set its extensions array to `[]`.
-
-### 4. Disable the standalone current-agent-status extension (if present)
-
-If you previously used the standalone `current-agent-status.ts` extension (which this replaces), disable it:
-
-```bash
-mv ~/.pi/agent/extensions/current-agent-status.ts ~/.pi/agent/extensions/current-agent-status.ts.disabled
-mv ~/.pi/agent/extensions/current-agent-status.json ~/.pi/agent/extensions/current-agent-status.json.disabled
-```
-
-### 5. Reload
-
-Run `/reload` in pi.
+Shortcut values use pi's key format, for example `alt+a`, `ctrl+f2`, `f2`, or `escape`. Avoid `Ctrl+Shift+letter` in terminals that use legacy VT input, including Windows Terminal.
 
 ## Agent definitions
 
-Agent definitions are read from:
+Agent definitions are loaded from the first available directory:
 
-1. `~/.pi/agent/agent-suite/agent-selection/agents/*.md` (suite directory, preferred)
-2. `~/.pi/agent/agents/*.md` (legacy fallback)
+1. `~/.pi/agent/agent-suite/agent-selection/agents/*.md`
+2. `~/.pi/agent/agents/*.md` legacy fallback
 
-Each `.md` file defines one agent. The filename (minus `.md`) becomes the agent ID.
-
-Example (`~/.pi/agent/agent-suite/agent-selection/agents/explore.md`):
+The filename without `.md` is the agent ID. Only agents with `type: main` or `type: both` are shown.
 
 ```markdown
 ---
@@ -123,59 +89,42 @@ tools:
   - ls
 ---
 
-You are a fast exploration agent. Focus on understanding code structure
-and finding relevant files. Do not edit or write files.
+You are a fast exploration agent.
 ```
 
-### Agent frontmatter fields
+Accepted frontmatter:
 
-| Field            | Type                                                                     | Description                                                   |
-| ---------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `type`           | `"main"` \| `"subagent"` \| `"both"`                                     | Only `main` and `both` are shown by this extension            |
-| `description`    | `string`                                                                 | Shown in the selector                                         |
-| `model.id`       | `string`                                                                 | `provider/model` format (e.g., `anthropic/claude-sonnet-4-5`) |
-| `model.thinking` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | Thinking level                                                |
-| `tools`          | `string[]`                                                               | Tool whitelist (supports `*` wildcards, but not bare `*`)     |
-| `agents`         | `string[]`                                                               | Accepted for compatibility; ignored by this extension          |
-
-## Footer colour hashing
-
-Agent IDs not listed in `footer.colors` get a deterministic colour derived from a SHA-256 hash of the name. The hue, saturation, and lightness are spread across the colour space so different agents are visually distinct.
+| Field            | Description                                                           |
+| ---------------- | --------------------------------------------------------------------- |
+| `type`           | `main`, `subagent`, or `both`; this extension shows `main` and `both` |
+| `description`    | Selector description                                                  |
+| `model.id`       | Model ID in `provider/model` format                                   |
+| `model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`                 |
+| `tools`          | Tool whitelist; supports `*` wildcards but not bare `*`               |
+| `agents`         | Accepted for compatibility; ignored by this extension                 |
 
 ## State persistence
 
-Selected agent state is stored in the pi session file as a custom entry:
+Selection is written to the pi session as a custom entry:
 
 ```ts
 pi.appendEntry("main-agent-selection", { agentId });
 ```
 
-On session start, the extension scans session entries backwards and restores the last `main-agent-selection` entry. No separate state directory or in-process handoff map is used.
+On session start, the extension reads `ctx.sessionManager.getEntries()` backwards and restores the latest `main-agent-selection` entry. No external state files or in-process handoff map are used.
 
 ## Development
 
-Install dependencies for LSP/type checking:
-
 ```bash
-cd ~/.pi/agent/extensions/main-agent-selection
 npm install
-```
-
-Type check:
-
-```bash
 npx tsc --noEmit
 ```
 
-The `tsconfig.json` uses path mappings that point to your local pi installation's type declarations, so `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` resolve correctly.
-
-> **Note:** At runtime, pi uses jiti with import aliases — it resolves these packages from its own bundled copies, not from the extension's `node_modules`. The `package.json` dependencies and `tsconfig.json` paths are for **development-time LSP only**.
+The package and TypeScript config are for LSP/type checking. At runtime, pi resolves its own bundled packages through jiti/import aliases.
 
 ## Credits
 
-Based on the `main-agent-selection` extension from [pi-agent-suite](https://github.com/earendil-works/pi-agent-suite) by Earendil Works.
-
-Agent status footer adapted from the `current-agent-status` standalone extension by the same author.
+Based on the `main-agent-selection` extension from [pi-agent-suite](https://github.com/earendil-works/pi-agent-suite). Footer status replaces the earlier standalone `current-agent-status` extension.
 
 ## License
 
