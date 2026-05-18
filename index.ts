@@ -1,16 +1,8 @@
 /**
  * Agent Selection Extension — configurable shortcut, coloured footer, session persistence.
- *
  * Config: ~/.pi/agent/extensions/main-agent-selection/config.json
- *
- * Replaces the bundled pi-agent-suite main-agent-selection extension.
- * Disable the bundled extension by setting "enabled": false in
- * ~/.pi/agent/agent-suite/agent-selection/config.json.
- *
- * Default shortcut is Alt+A (Ctrl+Shift+A is indistinguishable from Ctrl+A
- * in the legacy VT input protocol used by most terminals).
+ * Default shortcut: Alt+A (Ctrl+Shift+A is indistinguishable from Ctrl+A in legacy VT).
  */
-
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
@@ -32,464 +24,591 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 
-// --- Configuration ---
+// ── Constants & types ──
 
-const EXTENSION_DIR = "main-agent-selection";
-const CONFIG_FILE_NAME = "config.json";
-const STATE_SUBDIR = "state";
-const DEFAULT_SHORTCUT = "alt+a";
-const DEFAULT_COMMAND = "agent";
-const CONTRIBUTION_CHANGE_EVENT = "pi-harness:main-agent-contribution-change";
-
-interface FooterConfig {
-	readonly enabled: boolean;
-	readonly statusKey: string;
-	readonly prefix: string;
-	readonly colors: Readonly<Record<string, string>>;
-	readonly noneColor: string;
-}
-
-interface ExtensionConfig {
-	readonly enabled: boolean;
-	readonly command: string;
-	readonly shortcut: string | null;
-	readonly footer: FooterConfig;
-}
-
-const DEFAULT_CONFIG: ExtensionConfig = {
-	enabled: true,
-	command: DEFAULT_COMMAND,
-	shortcut: DEFAULT_SHORTCUT,
-	footer: { enabled: true, statusKey: "current-agent", prefix: "Agent:", colors: {}, noneColor: "#6B7280" },
-};
-
+const EXT_DIR = "main-agent-selection";
+const HANDOFF_PROP = "__piMainAgentSelectionHandoffs";
+const NO_AGENT_VALUE = "__none__";
 const RESET = "\x1b[0m";
+const AGENT_TYPES = new Set(["main", "subagent", "both"]);
+const THINKING_VALUES = new Set([
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+]);
+const FM_KEYS = new Set(["description", "type", "model", "tools", "agents"]);
+const MODEL_KEYS = new Set(["id", "thinking"]);
 
-// --- Agent definition loader ---
-
-const AGENT_FILE_EXTENSION = ".md";
-const AGENT_TYPES = ["main", "subagent", "both"] as const;
-const TOP_LEVEL_KEYS = ["description", "type", "model", "tools", "agents"] as const;
-const MODEL_KEYS = ["id", "thinking"] as const;
-const THINKING_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-type AgentType = (typeof AGENT_TYPES)[number];
-type ThinkingValue = (typeof THINKING_VALUES)[number];
-
-interface AgentDefinition {
-	readonly id: string;
-	readonly description: string;
-	readonly type: AgentType;
-	readonly prompt: string;
-	readonly model?: { readonly id?: string; readonly thinking?: ThinkingValue };
-	readonly tools?: readonly string[];
-	readonly agents?: readonly string[];
+interface FooterCfg {
+	enabled: boolean;
+	statusKey: string;
+	prefix: string;
+	colors: Record<string, string>;
+	noneColor: string;
 }
-
-async function loadAgentDefinitions(): Promise<AgentDefinition[]> {
-	const agentsDir = await resolveAgentsDir();
-	if (agentsDir === undefined) return [];
-	const entries = await readdir(agentsDir.path);
-	const agentEntries = [...entries].sort().filter((e) => e.endsWith(AGENT_FILE_EXTENSION));
-	const agents = await Promise.all(
-		agentEntries.map((entry) => readAgentDefinition(agentsDir.path, entry, agentsDir.source)),
-	);
-	return agents.filter((a): a is AgentDefinition => a !== undefined);
+interface Cfg {
+	enabled: boolean;
+	command: string;
+	shortcut: string | null;
+	footer: FooterCfg;
 }
-
-async function resolveAgentsDir(): Promise<
-	{ readonly path: string; readonly source: "suite" | "legacy" } | undefined
-> {
-	const suiteAgentsDir = join(getSuiteExtensionDir("agent-selection"), "agents");
-	try { await readdir(suiteAgentsDir); return { path: suiteAgentsDir, source: "suite" }; }
-	catch (error) { if (!isFileNotFoundError(error)) throw new Error(`failed to read suite agents directory: ${formatError(error)}`); }
-	const legacyAgentsDir = join(getAgentDir(), "agents");
-	try { await readdir(legacyAgentsDir); return { path: legacyAgentsDir, source: "legacy" }; }
-	catch { return undefined; }
+const DEFAULT_CFG: Cfg = {
+	enabled: true,
+	command: "agent",
+	shortcut: "alt+a",
+	footer: {
+		enabled: true,
+		statusKey: "current-agent",
+		prefix: "Agent:",
+		colors: {},
+		noneColor: "#6B7280",
+	},
+};
+interface AgentDef {
+	id: string;
+	description: string;
+	type: "main" | "subagent" | "both";
+	prompt: string;
+	model?: { id?: string; thinking?: string };
+	tools?: readonly string[];
+	agents?: readonly string[];
 }
-
-async function readAgentDefinition(
-	agentsDir: string, entry: string, source: "suite" | "legacy",
-): Promise<AgentDefinition | undefined> {
-	let content: string;
-	try { content = await readFile(join(agentsDir, entry), "utf8"); }
-	catch (error) {
-		if (source === "suite") throw new Error(`failed to read suite agent definition ${entry}: ${formatError(error)}`);
-		return undefined;
-	}
-	return parseAgentDefinition(entry, content);
-}
-
-function parseAgentDefinition(fileName: string, content: string): AgentDefinition | undefined {
-	const parsed = parseFrontmatter(content);
-	const fm = parsed.frontmatter;
-	if (!hasOnlyKeys(fm, TOP_LEVEL_KEYS)) return undefined;
-	const { type: rawType, description, model: rawModel, tools: rawTools, agents: rawAgents } = fm;
-	const type = rawType ?? "main";
-	if (!(typeof type === "string" && (AGENT_TYPES as readonly string[]).includes(type))) return undefined;
-	if (description !== undefined && typeof description !== "string") return undefined;
-	const model = parseModel(rawModel);
-	if (model === false) return undefined;
-	const tools = parseStringList(rawTools);
-	if (tools === false) return undefined;
-	const agents = parseStringList(rawAgents);
-	if (agents === false) return undefined;
-	return {
-		id: basename(fileName, AGENT_FILE_EXTENSION), description: description ?? "", type: type as AgentType,
-		prompt: parsed.body.trim(), ...(model !== undefined ? { model } : {}), ...(tools !== undefined ? { tools } : {}), ...(agents !== undefined ? { agents } : {}),
+type StatusCtx = {
+	hasUI?: boolean;
+	ui: { setStatus(key: string, text: string | undefined): void };
+};
+interface MainCtx extends StatusCtx {
+	cwd: string;
+	sessionManager: { getSessionFile(): string | undefined };
+	ui: StatusCtx["ui"] & {
+		custom?<T>(
+			factory: (
+				tui: { requestRender(): void },
+				theme: { fg(color: string, text: string): string },
+				kb: SelKeybindings,
+				done: (result: T) => void,
+			) => Component | Promise<Component>,
+		): Promise<T>;
+		notify(message: string, type?: "info" | "warning" | "error"): void;
+	};
+	modelRegistry: {
+		find(provider: string, modelId: string): Model<Api> | undefined;
 	};
 }
-
-function parseModel(value: unknown): AgentDefinition["model"] | false | undefined {
-	if (value === undefined) return undefined;
-	if (!isRecord(value) || !hasOnlyKeys(value, MODEL_KEYS)) return false;
-	const { id, thinking } = value;
-	if (id !== undefined && !(typeof id === "string" && id.indexOf("/") > 0 && id.indexOf("/") < id.length - 1)) return false;
-	const isThinking = typeof thinking === "string" && (THINKING_VALUES as readonly string[]).includes(thinking);
-	if (thinking !== undefined && !isThinking) return false;
-	return { ...(typeof id === "string" ? { id } : {}), ...(thinking !== undefined && isThinking ? { thinking: thinking as ThinkingValue } : {}) };
+type SelKeybinding = Extract<
+	Keybinding,
+	| "tui.select.up"
+	| "tui.select.down"
+	| "tui.select.confirm"
+	| "tui.select.cancel"
+>;
+interface SelKeybindings {
+	matches(data: string, kb: SelKeybinding): boolean;
 }
 
-function parseStringList(value: unknown): readonly string[] | undefined | false {
-	if (value === undefined) return undefined;
-	if (!Array.isArray(value)) return false;
-	const values: string[] = [];
-	const seen = new Set<string>();
-	for (const item of value) {
-		if (typeof item !== "string" || item.trim().length === 0 || seen.has(item)) return false;
-		seen.add(item); values.push(item);
+// ── Module state ──
+
+let currentAgentId: string | null = null;
+let activeAgentPrompt: string | undefined;
+let baselineActiveTools: string[] | undefined;
+let footerCtx: StatusCtx | undefined;
+
+// ── Small helpers ──
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function isEnoent(e: unknown): boolean {
+	return isRecord(e) && (e as Record<string, unknown>).code === "ENOENT";
+}
+function errMsg(e: unknown): string {
+	return e instanceof Error ? e.message : String(e);
+}
+function suiteDir(sub: string): string {
+	const d = env.PI_AGENT_SUITE_DIR;
+	const base = d?.length
+		? d === "~"
+			? homedir()
+			: d.startsWith("~/")
+				? join(homedir(), d.slice(2))
+				: d
+		: join(getAgentDir(), "agent-suite");
+	return join(base, sub);
+}
+
+// ── Config ──
+
+async function readConfig(): Promise<Cfg> {
+	let raw: string;
+	try {
+		raw = await readFile(
+			join(getAgentDir(), "extensions", EXT_DIR, "config.json"),
+			"utf8",
+		);
+	} catch {
+		return DEFAULT_CFG;
 	}
-	return values;
-}
-
-// --- Tool policy ---
-
-function resolveToolPolicy(
-	patterns: readonly string[], availableTools: readonly string[],
-): { readonly tools: readonly string[] } | { readonly issue: string } {
-	const resolved: string[] = [], seen = new Set<string>();
-	for (const pattern of patterns) {
-		if (isFullWildcard(pattern)) return { issue: "full wildcard * is not allowed" };
-		const matches = resolvePatternMatches(pattern, availableTools);
-		if (matches.length === 0) return { issue: `tool pattern ${pattern} did not match any available tool` };
-		for (const tool of matches) { if (!seen.has(tool)) { seen.add(tool); resolved.push(tool); } }
-	}
-	return { tools: resolved };
-}
-
-function resolvePatternMatches(pattern: string, availableTools: readonly string[]): string[] {
-	if (pattern.includes("*")) {
-		const expression = new RegExp(`^${pattern.split("*").map(escapeRegexSegment).join(".*")}$`);
-		return availableTools.filter((tool) => expression.test(tool));
-	}
-	return availableTools.includes(pattern) ? [pattern] : [];
-}
-
-function escapeRegexSegment(segment: string): string { return segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
-function isFullWildcard(pattern: string): boolean { return pattern.includes("*") && pattern.replaceAll("*", "").length === 0; }
-
-// --- State persistence ---
-
-const STATE_HASH_ENCODING = "hex";
-
-async function writeSelectedAgentState(state: { readonly cwd: string; readonly activeAgentId: string | null }): Promise<void> {
-	const stateDir = join(getSuiteExtensionDir("agent-selection"), STATE_SUBDIR);
-	await mkdir(stateDir, { recursive: true });
-	await writeFile(join(stateDir, `${selectedAgentStateFileName(state.cwd)}.json`), JSON.stringify(state, null, 2));
-}
-
-async function loadSelectedAgentState(cwd: string): Promise<
-	| { readonly kind: "missing" }
-	| { readonly kind: "valid"; readonly state: { readonly cwd: string; readonly activeAgentId: string | null } }
-	| { readonly kind: "invalid"; readonly issue: string }
-> {
-	const hash = selectedAgentStateFileName(cwd);
-	const paths = [
-		join(getSuiteExtensionDir("agent-selection"), STATE_SUBDIR, `${hash}.json`),
-		join(getAgentDir(), "agent-selection", "state", `${hash}.json`),
-	];
-	let content: string | undefined;
-	for (const filePath of paths) {
-		try { content = await readFile(filePath, "utf8"); break; }
-		catch (error) { if (!isFileNotFoundError(error)) return { kind: "invalid", issue: `failed to read selected-agent state: ${formatError(error)}` }; }
-	}
-	if (content === undefined) return { kind: "missing" };
 	let parsed: unknown;
-	try { parsed = JSON.parse(content); }
-	catch (error) { return { kind: "invalid", issue: `failed to parse selected-agent state: ${formatError(error)}` }; }
-	const STATE_KEYS = ["cwd", "activeAgentId"] as const;
-	if (!isRecord(parsed) || !hasOnlyKeys(parsed, STATE_KEYS))
-		return { kind: "invalid", issue: "selected-agent state must contain only cwd and activeAgentId" };
-	const cwdVal = parsed[STATE_KEYS[0]], activeAgentId = parsed[STATE_KEYS[1]];
-	if (typeof cwdVal !== "string") return { kind: "invalid", issue: "selected-agent state cwd must be a string" };
-	if (!(typeof activeAgentId === "string" || activeAgentId === null))
-		return { kind: "invalid", issue: "selected-agent state activeAgentId must be a string or null" };
-	if (cwdVal !== cwd) return { kind: "invalid", issue: "selected-agent state cwd does not match current working directory" };
-	return { kind: "valid", state: { cwd: cwdVal, activeAgentId } };
-}
-
-function selectedAgentStateFileName(cwd: string): string {
-	return createHash("sha256").update(cwd).digest(STATE_HASH_ENCODING);
-}
-
-// --- Suite storage helpers ---
-
-const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
-
-function getAgentSuiteDir(): string {
-	const configuredDir = env[AGENT_SUITE_DIR_ENV];
-	if (configuredDir !== undefined && configuredDir.length > 0) return expandHomeDirectory(configuredDir);
-	return join(getAgentDir(), "agent-suite");
-}
-
-function getSuiteExtensionDir(extensionDir: string): string { return join(getAgentSuiteDir(), extensionDir); }
-
-function expandHomeDirectory(path: string): string {
-	if (path === "~") return homedir();
-	if (path.startsWith("~/")) return join(homedir(), path.slice(2));
-	return path;
-}
-
-// --- Config ---
-
-async function readConfig(): Promise<ExtensionConfig> {
-	let content: string;
-	try { content = await readFile(join(getAgentDir(), "extensions", EXTENSION_DIR, CONFIG_FILE_NAME), "utf8"); }
-	catch { return DEFAULT_CONFIG; }
-	let parsed: unknown;
-	try { parsed = JSON.parse(content); } catch { return DEFAULT_CONFIG; }
-	if (!isRecord(parsed)) return DEFAULT_CONFIG;
-	const enabled = typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_CONFIG.enabled;
-	const command = typeof parsed.command === "string" && parsed.command.trim().length > 0 ? parsed.command.trim() : DEFAULT_CONFIG.command;
-	const shortcut = parsed.shortcut === null ? null
-		: typeof parsed.shortcut === "string" && parsed.shortcut.trim().length > 0 ? parsed.shortcut.trim() : DEFAULT_CONFIG.shortcut;
-	let footer: FooterConfig = DEFAULT_CONFIG.footer;
-	if (isRecord(parsed.footer)) {
-		const f = parsed.footer;
-		const sanitize = (s: string) => s.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return DEFAULT_CFG;
+	}
+	if (!isRecord(parsed)) return DEFAULT_CFG;
+	const p = parsed;
+	const enabled =
+		typeof p.enabled === "boolean" ? p.enabled : DEFAULT_CFG.enabled;
+	const command =
+		typeof p.command === "string" && p.command.trim()
+			? p.command.trim()
+			: DEFAULT_CFG.command;
+	const shortcut =
+		p.shortcut === null
+			? null
+			: typeof p.shortcut === "string" && p.shortcut.trim()
+				? p.shortcut.trim()
+				: DEFAULT_CFG.shortcut;
+	let footer = DEFAULT_CFG.footer;
+	if (isRecord(p.footer)) {
+		const f = p.footer;
+		const clean = (s: string) =>
+			s
+				.replace(/[\r\n\t]/g, " ")
+				.replace(/ +/g, " ")
+				.trim();
 		footer = {
-			enabled: typeof f.enabled === "boolean" ? f.enabled : DEFAULT_CONFIG.footer.enabled,
-			statusKey: typeof f.statusKey === "string" && f.statusKey.trim().length > 0 ? f.statusKey.trim() : DEFAULT_CONFIG.footer.statusKey,
-			prefix: typeof f.prefix === "string" ? sanitize(f.prefix) : DEFAULT_CONFIG.footer.prefix,
-			colors: isRecord(f.colors) ? Object.fromEntries(
-				Object.entries(f.colors).filter((e): e is [string, string] => typeof e[1] === "string" && /^#[\da-f]{6}$/i.test(e[1])),
-			) : { ...DEFAULT_CONFIG.footer.colors },
-			noneColor: typeof f.noneColor === "string" && /^#[\da-f]{6}$/i.test(f.noneColor) ? f.noneColor : DEFAULT_CONFIG.footer.noneColor,
+			enabled:
+				typeof f.enabled === "boolean" ? f.enabled : DEFAULT_CFG.footer.enabled,
+			statusKey:
+				typeof f.statusKey === "string" && f.statusKey.trim()
+					? f.statusKey.trim()
+					: DEFAULT_CFG.footer.statusKey,
+			prefix:
+				typeof f.prefix === "string"
+					? clean(f.prefix)
+					: DEFAULT_CFG.footer.prefix,
+			colors: isRecord(f.colors)
+				? Object.fromEntries(
+						Object.entries(f.colors).filter(
+							(e): e is [string, string] =>
+								typeof e[1] === "string" && /^#[\da-f]{6}$/i.test(e[1]),
+						),
+					)
+				: { ...DEFAULT_CFG.footer.colors },
+			noneColor:
+				typeof f.noneColor === "string" && /^#[\da-f]{6}$/i.test(f.noneColor)
+					? f.noneColor
+					: DEFAULT_CFG.footer.noneColor,
 		};
 	}
 	return { enabled, command, shortcut, footer };
 }
 
-// --- Footer/status ---
+// ── Agent definitions ──
 
-function formatAgentStatus(agentId: string | null, config: FooterConfig): string {
-	const safeAgentId = (agentId ?? "none").replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
-	const color = agentColor(agentId, config);
-	return `${fg(color, config.prefix)}${fg(color, safeAgentId)}`;
+async function loadAgentDefs(): Promise<AgentDef[]> {
+	const dir = await findAgentsDir();
+	if (!dir) return [];
+	const entries = [...(await readdir(dir))]
+		.sort()
+		.filter((e) => e.endsWith(".md"));
+	const agents = await Promise.all(entries.map((e) => parseAgentFile(dir, e)));
+	return agents.filter((a): a is AgentDef => a !== undefined);
 }
 
-function agentColor(agentId: string | null, config: FooterConfig): string {
-	if (agentId === null) return config.noneColor;
-	const exactMatch = config.colors[agentId];
-	if (exactMatch !== undefined) return exactMatch;
-	const lower = agentId.toLowerCase();
-	for (const [id, color] of Object.entries(config.colors)) { if (id.toLowerCase() === lower) return color; }
-	return hashColor(agentId);
+async function findAgentsDir(): Promise<string | undefined> {
+	const suitePath = join(suiteDir("agent-selection"), "agents");
+	try {
+		await readdir(suitePath);
+		return suitePath;
+	} catch (e) {
+		if (!isEnoent(e))
+			throw new Error(`failed to read suite agents dir: ${errMsg(e)}`);
+	}
+	const legacyPath = join(getAgentDir(), "agents");
+	try {
+		await readdir(legacyPath);
+		return legacyPath;
+	} catch {
+		return undefined;
+	}
 }
 
-function hashColor(text: string): string {
-	const digest = createHash("sha256").update(text).digest();
-	return hslToHex(Math.round((digest[0] / 255) * 360), 66 + (digest[1] % 10), 62 + (digest[2] % 10));
+async function parseAgentFile(
+	dir: string,
+	name: string,
+): Promise<AgentDef | undefined> {
+	let content: string;
+	try {
+		content = await readFile(join(dir, name), "utf8");
+	} catch {
+		return undefined;
+	}
+	const { frontmatter: fm, body } = parseFrontmatter(content);
+	if (!isRecord(fm) || !Object.keys(fm).every((k) => FM_KEYS.has(k)))
+		return undefined;
+	const type = fm.type ?? "main";
+	if (typeof type !== "string" || !AGENT_TYPES.has(type)) return undefined;
+	if (fm.description !== undefined && typeof fm.description !== "string")
+		return undefined;
+	const model = parseModel(fm.model);
+	if (model === false) return undefined;
+	const tools = parseStrList(fm.tools);
+	if (tools === false) return undefined;
+	const agents = parseStrList(fm.agents);
+	if (agents === false) return undefined;
+	return {
+		id: basename(name, ".md"),
+		description: (fm.description as string) ?? "",
+		type: type as AgentDef["type"],
+		prompt: body.trim(),
+		...(model !== undefined ? { model } : {}),
+		...(tools !== undefined ? { tools } : {}),
+		...(agents !== undefined ? { agents } : {}),
+	};
 }
 
-function fg(hex: string, text: string): string {
-	const [r, g, b] = hexToRgb(hex);
-	return `\x1b[38;2;${r};${g};${b}m${text}${RESET}`;
+function parseModel(value: unknown): AgentDef["model"] | false | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value) || !Object.keys(value).every((k) => MODEL_KEYS.has(k)))
+		return false;
+	const v = value;
+	if (
+		v.id !== undefined &&
+		!(
+			typeof v.id === "string" &&
+			v.id.includes("/") &&
+			!v.id.startsWith("/") &&
+			!v.id.endsWith("/")
+		)
+	)
+		return false;
+	const validThinking =
+		typeof v.thinking === "string" && THINKING_VALUES.has(v.thinking);
+	if (v.thinking !== undefined && !validThinking) return false;
+	return {
+		...(typeof v.id === "string" ? { id: v.id } : {}),
+		...(validThinking && typeof v.thinking === "string"
+			? { thinking: v.thinking }
+			: {}),
+	};
 }
 
-function hexToRgb(hex: string): [number, number, number] {
-	const n = hex.replace("#", "");
-	return [Number.parseInt(n.slice(0, 2), 16), Number.parseInt(n.slice(2, 4), 16), Number.parseInt(n.slice(4, 6), 16)];
+function parseStrList(value: unknown): readonly string[] | false | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) return false;
+	const seen = new Set<string>(),
+		result: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string" || !item.trim() || seen.has(item))
+			return false;
+		seen.add(item);
+		result.push(item);
+	}
+	return result;
 }
 
-function hslToHex(hue: number, sat: number, lit: number): string {
-	const s = sat / 100, l = lit / 100, c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((hue / 60) % 2) - 1)), m = l - c / 2;
-	const [r, g, b] = hue < 60 ? [c, x, 0] : hue < 120 ? [x, c, 0] : hue < 180 ? [0, c, x] : hue < 240 ? [0, x, c] : hue < 300 ? [x, 0, c] : [c, 0, x];
-	return `#${[r, g, b].map((ch) => Math.round((ch + m) * 255).toString(16).padStart(2, "0")).join("")}`;
+// ── Tool policy ──
+
+function resolveToolPolicy(
+	patterns: readonly string[],
+	available: readonly string[],
+): { tools: string[] } | { issue: string } {
+	const resolved: string[] = [],
+		seen = new Set<string>();
+	for (const pattern of patterns) {
+		if (/^\*+$/.test(pattern))
+			return { issue: "full wildcard * is not allowed" };
+		const matches = pattern.includes("*")
+			? available.filter((t) =>
+					new RegExp(
+						`^${pattern
+							.split("*")
+							.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+							.join(".*")}$`,
+					).test(t),
+				)
+			: available.includes(pattern)
+				? [pattern]
+				: [];
+		if (matches.length === 0)
+			return {
+				issue: `tool pattern ${pattern} did not match any available tool`,
+			};
+		for (const tool of matches)
+			if (!seen.has(tool)) {
+				seen.add(tool);
+				resolved.push(tool);
+			}
+	}
+	return { tools: resolved };
 }
 
-// --- Session replacement handoff ---
+// ── State persistence ──
 
-const SESSION_HANDOFF_PROPERTY = "__piHarnessMainAgentSelectionSessionReplacementHandoffs";
-type SessionHandoff = { readonly found: false } | { readonly found: true; readonly activeAgentId: string | null };
-
-function isHandoffReason(reason: string | undefined): boolean { return reason === "new" || reason === "fork" || reason === "resume"; }
-
-function captureHandoff(pi: ExtensionAPI, event: unknown, ctx: MainAgentContext): void {
-	const e = event as { reason?: string; targetSessionFile?: string };
-	if (!isHandoffReason(e.reason)) return;
-	const key = e.targetSessionFile ?? ctx.sessionManager.getSessionFile() ?? resolve(ctx.cwd);
-	getHandoffStore().set(key, activeAgentId(pi) ?? null);
+function stateHash(cwd: string): string {
+	return createHash("sha256").update(cwd).digest("hex");
 }
 
-async function restoreHandoff(pi: ExtensionAPI, event: unknown, ctx: MainAgentContext): Promise<boolean> {
-	if (!isHandoffReason((event as { reason?: string }).reason)) return false;
-	const key = ctx.sessionManager.getSessionFile() ?? resolve(ctx.cwd);
-	const handoff = consumeHandoff(key);
-	if (!handoff.found) return false;
-	if (handoff.activeAgentId === null) { clearActiveAgent(pi); return true; }
-	const agents = await loadSelectableAgents();
-	const agent = agents.find((a) => a.id === handoff.activeAgentId);
-	if (agent === undefined) { reportIssue(ctx, `selected agent ${handoff.activeAgentId} was not found`); clearActiveAgent(pi); return true; }
-	await applyAgentSelection(pi, ctx, agent);
-	return true;
+async function writeState(cwd: string, agentId: string | null): Promise<void> {
+	const dir = join(suiteDir("agent-selection"), "state");
+	await mkdir(dir, { recursive: true });
+	await writeFile(
+		join(dir, `${stateHash(cwd)}.json`),
+		JSON.stringify({ cwd, activeAgentId: agentId }, null, 2),
+	);
 }
 
-function getHandoffStore(): Map<string, string | null> {
-	const carrier = globalThis as { [SESSION_HANDOFF_PROPERTY]?: Map<string, string | null> };
-	if (carrier[SESSION_HANDOFF_PROPERTY] !== undefined) return carrier[SESSION_HANDOFF_PROPERTY]!;
-	const store = new Map<string, string | null>();
-	carrier[SESSION_HANDOFF_PROPERTY] = store;
-	return store;
-}
-
-function consumeHandoff(key: string): SessionHandoff {
-	const store = getHandoffStore();
-	if (!store.has(key)) return { found: false };
-	const activeAgentId = store.get(key) ?? null;
-	store.delete(key);
-	return { found: true, activeAgentId };
-}
-
-// --- Active agent state (module-level) ---
-
-let activeAgentPrompt: string | undefined;
-let baselineActiveTools: string[] | undefined;
-
-function setActiveAgent(pi: ExtensionAPI, prompt: string, tools: readonly string[] | undefined): void {
-	if (baselineActiveTools === undefined) baselineActiveTools = pi.getActiveTools();
-	activeAgentPrompt = prompt;
-	pi.setActiveTools(tools !== undefined ? [...tools] : baselineActiveTools!);
-	(pi.events as unknown as { emit(name: string, data: undefined): void }).emit(CONTRIBUTION_CHANGE_EVENT, undefined);
-}
-
-function clearActiveAgent(pi: ExtensionAPI): void {
-	activeAgentPrompt = undefined;
-	if (baselineActiveTools !== undefined) pi.setActiveTools(baselineActiveTools);
-	(pi.events as unknown as { emit(name: string, data: undefined): void }).emit(CONTRIBUTION_CHANGE_EVENT, undefined);
-}
-
-function activeAgentId(pi: ExtensionAPI): string | undefined {
-	// Read from the runtime composition if another extension owns it, otherwise fall back to module state
-	const holder = (pi.events as unknown as Record<string, unknown>)[RUNTIME_PROPERTY];
-	if (holder !== undefined && !(holder as { stale?: boolean }).stale) {
-		return ((holder as { runtime: unknown }).runtime as { getMainAgentContribution?: () => { agent?: { id?: string } } | undefined })?.getMainAgentContribution?.()?.agent?.id;
+async function loadState(
+	cwd: string,
+): Promise<{ agentId: string | null } | undefined> {
+	const hash = stateHash(cwd);
+	for (const base of [
+		suiteDir("agent-selection"),
+		join(getAgentDir(), "agent-selection"),
+	]) {
+		try {
+			const p = JSON.parse(
+				await readFile(join(base, "state", `${hash}.json`), "utf8"),
+			);
+			if (
+				isRecord(p) &&
+				p.cwd === cwd &&
+				(typeof p.activeAgentId === "string" || p.activeAgentId === null)
+			)
+				return { agentId: p.activeAgentId as string | null };
+		} catch (e) {
+			if (!isEnoent(e)) return undefined;
+		}
 	}
 	return undefined;
 }
 
-const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV5";
+// ── Session handoff ──
 
-// --- Context types ---
-
-interface MainAgentContext {
-	readonly cwd: string;
-	readonly hasUI?: boolean;
-	readonly sessionManager: { getSessionFile(): string | undefined };
-	readonly ui: {
-		custom?<T>(factory: (tui: { requestRender(): void }, theme: { fg(color: string, text: string): string }, keybindings: MainAgentSelectorKeybindings, done: (result: T) => void) => Component | Promise<Component>): Promise<T>;
-		notify(message: string, type?: "info" | "warning" | "error"): void;
-	};
-	readonly modelRegistry: { find(provider: string, modelId: string): Model<Api> | undefined };
+function handoffStore(): Map<string, string | null> {
+	return ((globalThis as Record<string, unknown>)[HANDOFF_PROP] ??= new Map<
+		string,
+		string | null
+	>()) as Map<string, string | null>;
 }
 
-type MainAgentSelectorKeybinding = Extract<Keybinding, "tui.select.up" | "tui.select.down" | "tui.select.confirm" | "tui.select.cancel">;
-interface MainAgentSelectorKeybindings { matches(data: string, keybinding: MainAgentSelectorKeybinding): boolean; }
+function isHandoff(reason?: string): boolean {
+	return reason === "new" || reason === "fork" || reason === "resume";
+}
 
-// --- Searchable agent selector UI ---
+// ── Colour helpers ──
 
-const NO_AGENT_LABEL = "No agent";
-const NO_AGENT_ARGUMENT = "none";
-const NO_AGENT_VALUE = "__none__";
+function formatStatus(agentId: string | null, cfg: FooterCfg): string {
+	const label = (agentId ?? "none")
+		.replace(/[\r\n\t]/g, " ")
+		.replace(/ +/g, " ")
+		.trim();
+	const color = agentColor(agentId, cfg);
+	return `${fg(color, cfg.prefix)}${fg(color, label)}`;
+}
 
-class SearchableAgentSelector implements Component, Focusable {
-	private readonly options: readonly SelectItem[];
-	private readonly keybindings: MainAgentSelectorKeybindings;
-	private readonly searchInput = new Input();
-	private readonly theme: { fg(color: string, text: string): string };
-	private readonly onSelect: (value: string) => void;
-	private readonly onCancel: () => void;
-	private selectList: SelectList;
-	private filteredOptions: readonly SelectItem[];
-	private selectedValue: string;
-	private readonly maxVisibleOptions: number;
+function agentColor(id: string | null, cfg: FooterCfg): string {
+	if (id === null) return cfg.noneColor;
+	if (cfg.colors[id] !== undefined) return cfg.colors[id];
+	const lower = id.toLowerCase();
+	for (const [k, v] of Object.entries(cfg.colors))
+		if (k.toLowerCase() === lower) return v;
+	return hashColor(id);
+}
+
+function hashColor(text: string): string {
+	const d = createHash("sha256").update(text).digest();
+	return hslToHex(((d[0] / 255) * 360) | 0, 66 + (d[1] % 10), 62 + (d[2] % 10));
+}
+
+function fg(hex: string, text: string): string {
+	const n = parseInt(hex.slice(1), 16);
+	return `\x1b[38;2;${(n >> 16) & 0xff};${(n >> 8) & 0xff};${n & 0xff}m${text}${RESET}`;
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+	const sf = s / 100,
+		lf = l / 100,
+		c = (1 - Math.abs(2 * lf - 1)) * sf;
+	const x = c * (1 - Math.abs(((h / 60) % 2) - 1)),
+		m = lf - c / 2;
+	const [r, g, b] =
+		h < 60
+			? [c, x, 0]
+			: h < 120
+				? [x, c, 0]
+				: h < 180
+					? [0, c, x]
+					: h < 240
+						? [0, x, c]
+						: h < 300
+							? [x, 0, c]
+							: [c, 0, x];
+	return `#${[r, g, b]
+		.map((v) =>
+			Math.round((v + m) * 255)
+				.toString(16)
+				.padStart(2, "0"),
+		)
+		.join("")}`;
+}
+
+// ── Active agent management ──
+
+function setActiveAgent(
+	pi: ExtensionAPI,
+	id: string,
+	prompt: string,
+	tools: readonly string[] | undefined,
+): void {
+	if (baselineActiveTools === undefined)
+		baselineActiveTools = pi.getActiveTools();
+	currentAgentId = id;
+	activeAgentPrompt = prompt;
+	pi.setActiveTools(tools !== undefined ? [...tools] : baselineActiveTools);
+}
+
+function clearActiveAgent(pi: ExtensionAPI): void {
+	currentAgentId = null;
+	activeAgentPrompt = undefined;
+	if (baselineActiveTools !== undefined) pi.setActiveTools(baselineActiveTools);
+}
+
+function updateFooter(cfg: Cfg): void {
+	if (!cfg.footer.enabled || !footerCtx || footerCtx.hasUI === false) return;
+	footerCtx.ui.setStatus(
+		cfg.footer.statusKey,
+		formatStatus(currentAgentId, cfg.footer),
+	);
+}
+
+// ── Agent selector UI ──
+
+class AgentSelector implements Component, Focusable {
+	private opts: readonly SelectItem[];
+	private kb: SelKeybindings;
+	private input = new Input();
+	private theme: { fg(c: string, t: string): string };
+	private onSelect: (v: string) => void;
+	private onCancel: () => void;
+	private list: SelectList;
+	private filtered: readonly SelectItem[];
+	private sel: string;
+	private maxVis: number;
 	private _focused = false;
 
-	constructor(options: {
-		readonly allOptions: readonly SelectItem[];
-		readonly currentAgentId: string | null;
-		readonly keybindings: MainAgentSelectorKeybindings;
-		readonly theme: { fg(color: string, text: string): string };
-		readonly onSelect: (value: string) => void;
-		readonly onCancel: () => void;
+	constructor(opts: {
+		allOptions: readonly SelectItem[];
+		currentId: string | null;
+		keybindings: SelKeybindings;
+		theme: { fg(c: string, t: string): string };
+		onSelect: (v: string) => void;
+		onCancel: () => void;
 	}) {
-		this.options = options.allOptions;
-		this.keybindings = options.keybindings;
-		this.theme = options.theme;
-		this.onSelect = options.onSelect;
-		this.onCancel = options.onCancel;
-		this.filteredOptions = options.allOptions;
-		this.selectedValue = options.currentAgentId ?? NO_AGENT_VALUE;
-		this.maxVisibleOptions = Math.min(options.allOptions.length, 10);
-		this.selectList = this.makeList(this.filteredOptions);
-		this.syncSelectedIndex();
+		this.opts = opts.allOptions;
+		this.kb = opts.keybindings;
+		this.theme = opts.theme;
+		this.onSelect = opts.onSelect;
+		this.onCancel = opts.onCancel;
+		this.filtered = opts.allOptions;
+		this.sel = opts.currentId ?? NO_AGENT_VALUE;
+		this.maxVis = Math.min(opts.allOptions.length, 10);
+		this.list = this.mkList(this.filtered);
+		this.syncSel();
 	}
 
-	get focused(): boolean { return this._focused; }
-	set focused(v: boolean) { this._focused = v; this.searchInput.focused = v; }
+	get focused() {
+		return this._focused;
+	}
+	set focused(v: boolean) {
+		this._focused = v;
+		this.input.focused = v;
+	}
 
-	render(width: number): string[] {
-		const lines = [truncateToWidth(this.theme.fg("dim", "Type to search agents • navigate • select • cancel"), width), ...this.searchInput.render(width)];
-		if (this.filteredOptions.length === 0) lines.push(truncateToWidth(this.theme.fg("warning", "  No matching agents"), width));
-		else lines.push(...this.selectList.render(width));
+	render(w: number): string[] {
+		const lines = [
+			truncateToWidth(
+				this.theme.fg(
+					"dim",
+					"Type to search agents • navigate • select • cancel",
+				),
+				w,
+			),
+			...this.input.render(w),
+		];
+		if (this.filtered.length === 0)
+			lines.push(
+				truncateToWidth(this.theme.fg("warning", "  No matching agents"), w),
+			);
+		else lines.push(...this.list.render(w));
 		return lines;
 	}
 
 	handleInput(data: string): void {
-		if (this.keybindings.matches(data, "tui.select.up")) { this.moveSelection(-1); return; }
-		if (this.keybindings.matches(data, "tui.select.down")) { this.moveSelection(1); return; }
-		if (this.keybindings.matches(data, "tui.select.confirm")) { if (this.filteredOptions.length > 0) this.onSelect(this.selectedValue); return; }
-		if (this.keybindings.matches(data, "tui.select.cancel")) { this.onCancel(); return; }
-		const prev = this.searchInput.getValue();
-		this.searchInput.handleInput(data);
-		if (this.searchInput.getValue() !== prev) this.applySearch();
+		if (this.kb.matches(data, "tui.select.up")) {
+			this.move(-1);
+			return;
+		}
+		if (this.kb.matches(data, "tui.select.down")) {
+			this.move(1);
+			return;
+		}
+		if (this.kb.matches(data, "tui.select.confirm")) {
+			if (this.filtered.length > 0) this.onSelect(this.sel);
+			return;
+		}
+		if (this.kb.matches(data, "tui.select.cancel")) {
+			this.onCancel();
+			return;
+		}
+		const prev = this.input.getValue();
+		this.input.handleInput(data);
+		if (this.input.getValue() !== prev) this.applySearch();
 	}
 
-	invalidate(): void { this.searchInput.invalidate(); this.selectList.invalidate(); }
+	invalidate(): void {
+		this.input.invalidate();
+		this.list.invalidate();
+	}
 
 	private applySearch(): void {
-		const q = this.searchInput.getValue().toLowerCase();
-		this.filteredOptions = q.length === 0 ? this.options : this.options.filter((o) => o.label.toLowerCase().includes(q));
-		this.selectList = this.makeList(this.filteredOptions);
-		this.syncSelectedIndex();
+		const q = this.input.getValue().toLowerCase();
+		this.filtered =
+			q.length === 0
+				? this.opts
+				: this.opts.filter((o) => o.label.toLowerCase().includes(q));
+		this.list = this.mkList(this.filtered);
+		this.syncSel();
 	}
 
-	private syncSelectedIndex(): void {
-		const idx = this.filteredOptions.findIndex((o) => o.value === this.selectedValue);
-		if (idx >= 0) { this.selectList.setSelectedIndex(idx); return; }
-		const first = this.filteredOptions[0];
-		if (first !== undefined) { this.selectedValue = first.value; this.selectList.setSelectedIndex(0); }
+	private syncSel(): void {
+		const idx = this.filtered.findIndex((o) => o.value === this.sel);
+		if (idx >= 0) {
+			this.list.setSelectedIndex(idx);
+			return;
+		}
+		if (this.filtered.length > 0) {
+			this.sel = this.filtered[0].value;
+			this.list.setSelectedIndex(0);
+		}
 	}
 
-	private moveSelection(dir: -1 | 1): void {
-		if (this.filteredOptions.length === 0) return;
-		const cur = this.filteredOptions.findIndex((o) => o.value === this.selectedValue);
-		const next = ((cur >= 0 ? cur : 0) + dir + this.filteredOptions.length) % this.filteredOptions.length;
-		const opt = this.filteredOptions[next];
-		if (opt !== undefined) { this.selectedValue = opt.value; this.selectList.setSelectedIndex(next); }
+	private move(dir: -1 | 1): void {
+		if (this.filtered.length === 0) return;
+		const cur = this.filtered.findIndex((o) => o.value === this.sel);
+		const next =
+			((cur >= 0 ? cur : 0) + dir + this.filtered.length) %
+			this.filtered.length;
+		this.sel = this.filtered[next].value;
+		this.list.setSelectedIndex(next);
 	}
 
-	private makeList(options: readonly SelectItem[]): SelectList {
-		return new SelectList([...options], this.maxVisibleOptions, {
+	private mkList(opts: readonly SelectItem[]): SelectList {
+		return new SelectList([...opts], this.maxVis, {
 			selectedPrefix: (t: string) => this.theme.fg("accent", t),
 			selectedText: (t: string) => this.theme.fg("accent", t),
 			description: (t: string) => this.theme.fg("muted", t),
@@ -499,197 +618,257 @@ class SearchableAgentSelector implements Component, Focusable {
 	}
 }
 
-// --- Core agent selection ---
+// ── Core agent selection ──
 
-async function loadSelectableAgents(): Promise<AgentDefinition[]> {
-	const agents = await loadAgentDefinitions();
-	return agents.filter((a) => a.type === "main" || a.type === "both");
+async function loadSelectableAgents(): Promise<AgentDef[]> {
+	return (await loadAgentDefs()).filter(
+		(a) => a.type === "main" || a.type === "both",
+	);
 }
 
-async function selectMainAgent(pi: ExtensionAPI, ctx: MainAgentContext, explicitAgentId: string | undefined, config: ExtensionConfig): Promise<void> {
+async function selectMainAgent(
+	pi: ExtensionAPI,
+	ctx: MainCtx,
+	id: string | undefined,
+	cfg: Cfg,
+): Promise<void> {
 	const agents = await loadSelectableAgents();
-	const selectedAgentId = explicitAgentId ?? (await promptForAgent(pi, ctx, agents));
-	if (selectedAgentId === undefined) return;
-	if (selectedAgentId === null) { await selectNoMainAgent(pi, ctx, config); return; }
-	const agent = agents.find((a) => a.id === selectedAgentId);
-	if (agent === undefined) { reportIssue(ctx, `agent ${selectedAgentId} was not found`); return; }
-	const applied = await applyAgentSelection(pi, ctx, agent);
-	await writeSelectedAgentState({ cwd: resolve(ctx.cwd), activeAgentId: applied ? agent.id : null });
-	refreshFooterStatus(ctx, pi, config);
+	const selected = id ?? (await promptForAgent(ctx, agents));
+	if (selected === undefined) return;
+	if (selected === null) {
+		await selectNone(pi, ctx, cfg);
+		return;
+	}
+	const agent = agents.find((a) => a.id === selected);
+	if (!agent) {
+		warn(ctx, `agent ${selected} was not found`);
+		return;
+	}
+	const applied = await applyAgent(pi, ctx, agent);
+	await writeState(resolve(ctx.cwd), applied ? agent.id : null);
+	updateFooter(cfg);
 }
 
-async function selectNoMainAgent(pi: ExtensionAPI, ctx: MainAgentContext, config: ExtensionConfig): Promise<void> {
+async function selectNone(
+	pi: ExtensionAPI,
+	ctx: MainCtx,
+	cfg: Cfg,
+): Promise<void> {
 	clearActiveAgent(pi);
-	await writeSelectedAgentState({ cwd: resolve(ctx.cwd), activeAgentId: null });
-	refreshFooterStatus(ctx, pi, config);
+	await writeState(resolve(ctx.cwd), null);
+	updateFooter(cfg);
 }
 
-async function applyAgentSelection(pi: ExtensionAPI, ctx: MainAgentContext, agent: AgentDefinition): Promise<boolean> {
-	const resolvedTools = resolveMainAgentTools(pi, agent);
-	if ("issue" in resolvedTools) { clearActiveAgent(pi); reportIssue(ctx, resolvedTools.issue); return false; }
+async function applyAgent(
+	pi: ExtensionAPI,
+	ctx: MainCtx,
+	agent: AgentDef,
+): Promise<boolean> {
+	const tools = resolveTools(pi, agent);
+	if ("issue" in tools) {
+		clearActiveAgent(pi);
+		warn(ctx, tools.issue);
+		return false;
+	}
 	if (agent.model?.id !== undefined) {
 		const model = resolveModel(ctx, agent.model.id);
-		if (model === undefined) { clearActiveAgent(pi); reportIssue(ctx, `model ${agent.model.id} was not found`); return false; }
-		const modelApplied = await pi.setModel(model);
-		if (!modelApplied) { clearActiveAgent(pi); reportIssue(ctx, `model ${agent.model.id} could not be applied`); return false; }
+		if (!model) {
+			clearActiveAgent(pi);
+			warn(ctx, `model ${agent.model.id} was not found`);
+			return false;
+		}
+		if (!(await pi.setModel(model))) {
+			clearActiveAgent(pi);
+			warn(ctx, `model ${agent.model.id} could not be applied`);
+			return false;
+		}
 	}
-	if (agent.model?.thinking !== undefined) pi.setThinkingLevel(agent.model.thinking);
-	setActiveAgent(pi, agent.prompt, resolvedTools.tools);
+	if (agent.model?.thinking !== undefined)
+		pi.setThinkingLevel(agent.model.thinking as any);
+	setActiveAgent(pi, agent.id, agent.prompt, tools.tools);
 	return true;
 }
 
-function resolveMainAgentTools(pi: ExtensionAPI, agent: AgentDefinition): { readonly tools?: readonly string[] } | { readonly issue: string } {
+function resolveTools(
+	pi: ExtensionAPI,
+	agent: AgentDef,
+): { tools?: readonly string[] } | { issue: string } {
 	if (agent.tools === undefined) return {};
-	const availableToolNames = pi.getAllTools().map((t) => t.name);
-	const resolved = resolveToolPolicy(agent.tools, availableToolNames);
-	if ("issue" in resolved) return resolved;
-	return { tools: resolved.tools };
+	const available = pi.getAllTools().map((t) => t.name);
+	const result = resolveToolPolicy(agent.tools, available);
+	return "issue" in result ? result : { tools: result.tools };
 }
 
-function resolveModel(ctx: MainAgentContext, modelId: string): Model<Api> | undefined {
-	const i = modelId.indexOf("/");
-	if (i <= 0 || i === modelId.length - 1) return undefined;
-	return ctx.modelRegistry.find(modelId.slice(0, i), modelId.slice(i + 1));
+function resolveModel(ctx: MainCtx, id: string): Model<Api> | undefined {
+	const i = id.indexOf("/");
+	return i > 0 && i < id.length - 1
+		? ctx.modelRegistry.find(id.slice(0, i), id.slice(i + 1))
+		: undefined;
 }
 
-async function promptForAgent(pi: ExtensionAPI, ctx: MainAgentContext, agents: readonly AgentDefinition[]): Promise<string | null | undefined> {
-	if (ctx.hasUI === false || ctx.ui.custom === undefined) { reportIssue(ctx, "agent selection UI is unavailable"); return undefined; }
-	const composition = getExistingComposition(pi);
-	const currentAgentId = composition?.getMainAgentContribution?.()?.agent?.id ?? null;
+async function promptForAgent(
+	ctx: MainCtx,
+	agents: readonly AgentDef[],
+): Promise<string | null | undefined> {
+	if (ctx.hasUI === false || ctx.ui.custom === undefined) {
+		warn(ctx, "agent selection UI is unavailable");
+		return undefined;
+	}
 	const options: SelectItem[] = [
-		{ value: NO_AGENT_VALUE, label: NO_AGENT_LABEL },
-		...agents.map((a) => ({ value: a.id, label: `${a.id} — ${a.description}` })),
+		{ value: NO_AGENT_VALUE, label: "No agent" },
+		...agents.map((a) => ({
+			value: a.id,
+			label: `${a.id} — ${a.description}`,
+		})),
 	];
-	const selected = await ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
-		const selector = new SearchableAgentSelector({ allOptions: options, currentAgentId, keybindings, theme, onSelect: (v) => done(v), onCancel: () => done(undefined) });
-		return {
-			get focused() { return selector.focused; },
-			set focused(v: boolean) { selector.focused = v; },
-			render(w: number) { return selector.render(w); },
-			invalidate() { selector.invalidate(); },
-			handleInput(d: string) { selector.handleInput(d); tui.requestRender(); },
-		};
-	});
+	const selected = await ctx.ui.custom<string | undefined>(
+		(tui, theme, kb, done) => {
+			const sel = new AgentSelector({
+				allOptions: options,
+				currentId: currentAgentId,
+				keybindings: kb,
+				theme,
+				onSelect: (v) => done(v),
+				onCancel: () => done(undefined),
+			});
+			return {
+				get focused() {
+					return sel.focused;
+				},
+				set focused(v: boolean) {
+					sel.focused = v;
+				},
+				render(w: number) {
+					return sel.render(w);
+				},
+				invalidate() {
+					sel.invalidate();
+				},
+				handleInput(d: string) {
+					sel.handleInput(d);
+					tui.requestRender();
+				},
+			};
+		},
+	);
 	if (selected === undefined) return undefined;
 	return selected === NO_AGENT_VALUE ? null : selected;
 }
 
-function getExistingComposition(pi: ExtensionAPI): { getMainAgentContribution?: () => { agent?: { id?: string } } | undefined } | undefined {
-	const holder = (pi.events as unknown as Record<string, unknown>)[RUNTIME_PROPERTY];
-	if (holder !== undefined && !(holder as { stale?: boolean }).stale) return (holder as { runtime: unknown }).runtime as { getMainAgentContribution?: () => { agent?: { id?: string } } | undefined };
-	return undefined;
-}
+// ── Session lifecycle ──
 
-// --- Session lifecycle ---
-
-async function restoreSelectedMainAgent(pi: ExtensionAPI, ctx: MainAgentContext): Promise<void> {
-	const normalizedCwd = resolve(ctx.cwd);
-	const state = await loadSelectedAgentState(normalizedCwd);
-	if (state.kind === "missing" || state.kind === "invalid" || state.state.activeAgentId === null) {
-		if (state.kind === "invalid") reportIssue(ctx, state.issue);
+async function restoreAgent(pi: ExtensionAPI, ctx: MainCtx): Promise<void> {
+	const cwd = resolve(ctx.cwd);
+	const state = await loadState(cwd);
+	if (!state || state.agentId === null) {
 		clearActiveAgent(pi);
 		return;
 	}
 	const agents = await loadSelectableAgents();
-	const agent = agents.find((a) => a.id === state.state.activeAgentId);
-	if (agent === undefined) {
-		reportIssue(ctx, `selected agent ${state.state.activeAgentId} was not found`);
+	const agent = agents.find((a) => a.id === state.agentId);
+	if (!agent) {
+		warn(ctx, `selected agent ${state.agentId} was not found`);
 		clearActiveAgent(pi);
 		return;
 	}
-	await applyAgentSelection(pi, ctx, agent);
+	await applyAgent(pi, ctx, agent);
 }
 
-function refreshFooterStatus(ctx: unknown, pi: ExtensionAPI, config: ExtensionConfig): void {
-	if (!config.footer.enabled) return;
-	const statusCtx = ctx as { hasUI?: boolean; ui: { setStatus(key: string, text: string | undefined): void } } | undefined;
-	if (statusCtx === undefined || statusCtx.hasUI === false) return;
-	const composition = getExistingComposition(pi);
-	const agentId = composition?.getMainAgentContribution?.()?.agent?.id ?? null;
-	statusCtx.ui.setStatus(config.footer.statusKey, formatAgentStatus(agentId, config.footer));
+function warn(ctx: MainCtx, msg: string): void {
+	if (ctx.hasUI !== false) ctx.ui.notify(`[agent-selection] ${msg}`, "warning");
 }
 
-// --- Extension entry point ---
+// ── Extension entry point ──
 
-export default async function mainAgentSelection(pi: ExtensionAPI): Promise<void> {
-	const config = await readConfig();
-	if (!config.enabled) return;
+export default async function mainAgentSelection(
+	pi: ExtensionAPI,
+): Promise<void> {
+	const cfg = await readConfig();
+	if (!cfg.enabled) return;
 
-	let activeCtx: { hasUI?: boolean; ui: { setStatus(key: string, text: string | undefined): void } } | undefined;
-
-	// System prompt injection for the selected agent
 	pi.on("before_agent_start", async (event) => {
 		if (activeAgentPrompt === undefined) return undefined;
-		const basePrompt = (event as { systemPrompt?: string }).systemPrompt;
-		return { systemPrompt: [basePrompt, activeAgentPrompt].filter(Boolean).join("\n\n") };
+		const base = (event as { systemPrompt?: string }).systemPrompt;
+		return {
+			systemPrompt: [base, activeAgentPrompt].filter(Boolean).join("\n\n"),
+		};
 	});
 
-	pi.registerCommand(config.command, {
+	pi.registerCommand(cfg.command, {
 		description: "Select the main agent for this working directory",
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
-			if (trimmed.toLowerCase() === NO_AGENT_ARGUMENT) { await selectNoMainAgent(pi, ctx as MainAgentContext, config); return; }
-			await selectMainAgent(pi, ctx as MainAgentContext, trimmed || undefined, config);
+			if (trimmed.toLowerCase() === "none") {
+				await selectNone(pi, ctx as MainCtx, cfg);
+				return;
+			}
+			await selectMainAgent(pi, ctx as MainCtx, trimmed || undefined, cfg);
 		},
 	});
 
-	if (config.shortcut !== null) {
-		pi.registerShortcut(config.shortcut as Parameters<typeof pi.registerShortcut>[0], {
-			description: "Select the main agent",
-			handler: async (ctx) => { await selectMainAgent(pi, ctx as MainAgentContext, undefined, config); },
-		});
+	if (cfg.shortcut !== null) {
+		pi.registerShortcut(
+			cfg.shortcut as Parameters<typeof pi.registerShortcut>[0],
+			{
+				description: "Select the main agent",
+				handler: async (ctx) => {
+					await selectMainAgent(pi, ctx as MainCtx, undefined, cfg);
+				},
+			},
+		);
 	}
 
 	pi.on("session_start", async (event, ctx) => {
-		activeCtx = ctx as typeof activeCtx;
+		footerCtx = ctx as StatusCtx;
 		if (process.env.PI_SUBAGENT_AGENT_ID !== undefined) return;
-		const mainCtx = ctx as MainAgentContext;
-		if (await restoreHandoff(pi, event, mainCtx)) { refreshFooterStatus(ctx, pi, config); return; }
+		const mx = ctx as MainCtx;
 		const reason = (event as { reason?: string }).reason;
-		if (reason !== "startup" && reason !== "reload" && reason !== "resume") { refreshFooterStatus(ctx, pi, config); return; }
-		await restoreSelectedMainAgent(pi, mainCtx);
-		refreshFooterStatus(ctx, pi, config);
+		// Handoff for fork/new/resume within same process
+		if (isHandoff(reason)) {
+			const e = event as { targetSessionFile?: string };
+			const key =
+				e.targetSessionFile ??
+				mx.sessionManager.getSessionFile() ??
+				resolve(mx.cwd);
+			const stored = handoffStore().get(key) ?? undefined;
+			if (stored !== undefined) {
+				handoffStore().delete(key);
+				if (stored === null) {
+					clearActiveAgent(pi);
+				} else {
+					const agents = await loadSelectableAgents();
+					const agent = agents.find((a) => a.id === stored);
+					if (agent) await applyAgent(pi, mx, agent);
+					else clearActiveAgent(pi);
+				}
+				updateFooter(cfg);
+				return;
+			}
+		}
+		if (reason === "startup" || reason === "reload" || reason === "resume") {
+			await restoreAgent(pi, mx);
+		}
+		updateFooter(cfg);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		const statusCtx = ctx as typeof activeCtx;
-		if (config.footer.enabled && statusCtx !== undefined && statusCtx.hasUI !== false) {
-			statusCtx.ui.setStatus(config.footer.statusKey, undefined);
+		const sx = ctx as StatusCtx;
+		if (cfg.footer.enabled && sx !== undefined && sx.hasUI !== false) {
+			sx.ui.setStatus(cfg.footer.statusKey, undefined);
 		}
-		if (activeCtx === statusCtx) activeCtx = undefined;
+		if (footerCtx === sx) footerCtx = undefined;
 		if (process.env.PI_SUBAGENT_AGENT_ID !== undefined) return;
-		captureHandoff(pi, _event, ctx as MainAgentContext);
+		// Capture handoff for session replacement
+		const e = _event as { reason?: string; targetSessionFile?: string };
+		const mx = ctx as MainCtx;
+		if (isHandoff(e.reason)) {
+			const key =
+				e.targetSessionFile ??
+				mx.sessionManager.getSessionFile() ??
+				resolve(mx.cwd);
+			handoffStore().set(key, currentAgentId);
+		}
 		baselineActiveTools = undefined;
 		activeAgentPrompt = undefined;
 	});
-
-	(pi.events as unknown as { on?: (name: string, fn: () => void) => unknown }).on?.(CONTRIBUTION_CHANGE_EVENT, () => {
-		if (config.footer.enabled && activeCtx !== undefined && activeCtx.hasUI !== false) {
-			const composition = getExistingComposition(pi);
-			const agentId = composition?.getMainAgentContribution?.()?.agent?.id ?? null;
-			activeCtx.ui.setStatus(config.footer.statusKey, formatAgentStatus(agentId, config.footer));
-		}
-	});
-}
-
-// --- Utility ---
-
-function reportIssue(ctx: MainAgentContext, issue: string): void {
-	if (ctx.hasUI === false) return;
-	ctx.ui.notify(`[agent-selection] ${issue}`, "warning");
-}
-
-function formatError(error: unknown): string { return error instanceof Error ? error.message : String(error); }
-
-function isFileNotFoundError(error: unknown): boolean {
-	if (!isRecord(error)) return false;
-	return (error as { code?: unknown }).code === "ENOENT";
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
-	return Object.keys(value).every((key) => allowedKeys.includes(key));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
