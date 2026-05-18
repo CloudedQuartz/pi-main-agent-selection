@@ -16,6 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
+	fuzzyFilter,
 	type SelectItem,
 	SelectList,
 } from "@earendil-works/pi-tui";
@@ -34,7 +35,6 @@ const THINKING_VALUES = new Set([
 	"high",
 	"xhigh",
 ]);
-const FM_KEYS = new Set(["description", "type", "model", "tools", "agents"]);
 const MODEL_KEYS = new Set(["id", "thinking"]);
 
 interface FooterCfg {
@@ -88,6 +88,7 @@ interface MainCtx extends StatusCtx {
 	};
 	modelRegistry: {
 		find(provider: string, modelId: string): Model<Api> | undefined;
+		getAll(): Model<Api>[];
 	};
 }
 
@@ -236,8 +237,7 @@ async function parseAgentFile(
 		return undefined;
 	}
 	const { frontmatter: fm, body } = parseFrontmatter(content);
-	if (!isRecord(fm) || !Object.keys(fm).every((k) => FM_KEYS.has(k)))
-		return undefined;
+	if (!isRecord(fm)) return undefined;
 	const type = fm.type ?? "main";
 	if (type !== "main" && type !== "both") return undefined;
 	if (fm.description !== undefined && typeof fm.description !== "string")
@@ -260,21 +260,13 @@ function parseModel(value: unknown): AgentDef["model"] | false | undefined {
 	if (!isRecord(value) || !Object.keys(value).every((k) => MODEL_KEYS.has(k)))
 		return false;
 	const v = value;
-	if (
-		v.id !== undefined &&
-		!(
-			typeof v.id === "string" &&
-			v.id.includes("/") &&
-			!v.id.startsWith("/") &&
-			!v.id.endsWith("/")
-		)
-	)
+	if (v.id !== undefined && !(typeof v.id === "string" && v.id.trim()))
 		return false;
 	const validThinking =
 		typeof v.thinking === "string" && THINKING_VALUES.has(v.thinking);
 	if (v.thinking !== undefined && !validThinking) return false;
 	return {
-		...(typeof v.id === "string" ? { id: v.id } : {}),
+		...(typeof v.id === "string" ? { id: v.id.trim() } : {}),
 		...(validThinking && typeof v.thinking === "string"
 			? { thinking: v.thinking }
 			: {}),
@@ -489,10 +481,22 @@ function resolveTools(
 }
 
 function resolveModel(ctx: MainCtx, id: string): Model<Api> | undefined {
-	const i = id.indexOf("/");
-	return i > 0 && i < id.length - 1
-		? ctx.modelRegistry.find(id.slice(0, i), id.slice(i + 1))
-		: undefined;
+	const query = id.trim();
+	const i = query.indexOf("/");
+	if (i > 0 && i < query.length - 1) {
+		const exact = ctx.modelRegistry.find(query.slice(0, i), query.slice(i + 1));
+		if (exact !== undefined) return exact;
+	}
+	const provider = i > 0 ? query.slice(0, i) : undefined;
+	const modelQuery = i > 0 ? query.slice(i + 1) : query;
+	const models = ctx.modelRegistry
+		.getAll()
+		.filter((m) => provider === undefined || m.provider === provider);
+	return fuzzyFilter(
+		models,
+		modelQuery,
+		(m) => `${m.provider}/${m.id} ${m.provider} ${m.id} ${m.name ?? ""}`,
+	)[0];
 }
 
 async function promptForAgent(

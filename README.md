@@ -92,16 +92,17 @@ tools:
 You are a fast exploration agent.
 ```
 
-Accepted frontmatter:
+Used frontmatter:
 
 | Field            | Description                                                           |
 | ---------------- | --------------------------------------------------------------------- |
 | `type`           | `main`, `subagent`, or `both`; this extension shows `main` and `both` |
 | `description`    | Selector description                                                  |
-| `model.id`       | Model ID in `provider/model` format                                   |
+| `model.id`       | Exact `provider/model`, `provider/query`, or fuzzy model reference     |
 | `model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`                 |
 | `tools`          | Tool whitelist; supports `*` wildcards but not bare `*`               |
-| `agents`         | Accepted for compatibility; ignored by this extension                 |
+
+Other metadata, including `agents`, is allowed and ignored by this extension.
 
 ## State persistence
 
