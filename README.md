@@ -14,10 +14,10 @@ Standalone main-agent selector for [pi](https://github.com/earendil-works/pi). I
 
 ## Installation
 
-Place or clone this directory at:
+Install as a pi package:
 
-```text
-~/.pi/agent/extensions/main-agent-selection/
+```bash
+pi install git:github.com/CloudedQuartz/pi-main-agent-selection
 ```
 
 Disable the bundled pi-agent-suite selector in `~/.pi/agent/agent-suite/agent-selection/config.json`:
@@ -34,7 +34,7 @@ Run `/reload` in pi after changing extension or config files.
 
 ## Configuration
 
-Edit `~/.pi/agent/extensions/main-agent-selection/config.json`:
+The package includes defaults in `config.json`. To override them without editing the installed package, create `~/.pi/agent/main-agent-selection/config.json`:
 
 ```json
 {
@@ -98,7 +98,7 @@ Used frontmatter:
 | ---------------- | --------------------------------------------------------------------- |
 | `type`           | `main`, `subagent`, or `both`; this extension shows `main` and `both` |
 | `description`    | Selector description                                                  |
-| `model.id`       | Exact `provider/model`, `provider/query`, or fuzzy model reference     |
+| `model.id`       | Exact `provider/model`, `provider/query`, or fuzzy model reference    |
 | `model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`                 |
 | `tools`          | Tool whitelist; supports `*` wildcards but not bare `*`               |
 

@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { env } from "node:process";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -159,15 +160,20 @@ function shortcut(v: unknown, fallback: string | null): string | null {
 }
 
 async function readConfig(): Promise<Cfg> {
-	let raw: string;
-	try {
-		raw = await readFile(
-			join(getAgentDir(), "extensions", EXT_DIR, "config.json"),
-			"utf8",
-		);
-	} catch {
-		return DEFAULT_CFG;
+	let raw: string | undefined;
+	for (const path of [
+		join(getAgentDir(), EXT_DIR, "config.json"),
+		join(getAgentDir(), "extensions", EXT_DIR, "config.json"),
+		fileURLToPath(new URL("./config.json", import.meta.url)),
+	]) {
+		try {
+			raw = await readFile(path, "utf8");
+			break;
+		} catch (error) {
+			if (!isEnoent(error)) return DEFAULT_CFG;
+		}
 	}
+	if (raw === undefined) return DEFAULT_CFG;
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
