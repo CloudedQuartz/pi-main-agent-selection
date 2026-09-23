@@ -93,12 +93,12 @@ interface MainCtx extends StatusCtx {
 	};
 }
 
-// ── Module state ──
-
-let currentAgentId: string | null = null;
-let activeAgentPrompt: string | undefined;
-let baselineActiveTools: string[] | undefined;
-let footerCtx: StatusCtx | undefined;
+interface AgentState {
+	currentAgentId: string | null;
+	activeAgentPrompt: string | undefined;
+	baselineActiveTools: string[] | undefined;
+	footerCtx: StatusCtx | undefined;
+}
 
 // ── Small helpers ──
 
@@ -390,28 +390,33 @@ function hslToHex(h: number, s: number, l: number): string {
 
 function setActiveAgent(
 	pi: ExtensionAPI,
+	state: AgentState,
 	id: string,
 	prompt: string,
 	tools: readonly string[] | undefined,
 ): void {
-	if (baselineActiveTools === undefined)
-		baselineActiveTools = pi.getActiveTools();
-	currentAgentId = id;
-	activeAgentPrompt = prompt;
-	pi.setActiveTools(tools !== undefined ? [...tools] : baselineActiveTools);
+	if (state.baselineActiveTools === undefined)
+		state.baselineActiveTools = pi.getActiveTools();
+	state.currentAgentId = id;
+	state.activeAgentPrompt = prompt;
+	pi.setActiveTools(
+		tools !== undefined ? [...tools] : state.baselineActiveTools,
+	);
 }
 
-function clearActiveAgent(pi: ExtensionAPI): void {
-	currentAgentId = null;
-	activeAgentPrompt = undefined;
-	if (baselineActiveTools !== undefined) pi.setActiveTools(baselineActiveTools);
+function clearActiveAgent(pi: ExtensionAPI, state: AgentState): void {
+	state.currentAgentId = null;
+	state.activeAgentPrompt = undefined;
+	if (state.baselineActiveTools !== undefined)
+		pi.setActiveTools(state.baselineActiveTools);
 }
 
-function updateFooter(cfg: Cfg): void {
-	if (!cfg.footer.enabled || !footerCtx || footerCtx.hasUI === false) return;
-	footerCtx.ui.setStatus(
+function updateFooter(cfg: Cfg, state: AgentState): void {
+	if (!cfg.footer.enabled || !state.footerCtx || state.footerCtx.hasUI === false)
+		return;
+	state.footerCtx.ui.setStatus(
 		cfg.footer.statusKey,
-		formatStatus(currentAgentId, cfg.footer),
+		formatStatus(state.currentAgentId, cfg.footer),
 	);
 }
 
@@ -419,15 +424,16 @@ function updateFooter(cfg: Cfg): void {
 
 async function selectMainAgent(
 	pi: ExtensionAPI,
+	state: AgentState,
 	ctx: MainCtx,
 	id: string | undefined,
 	cfg: Cfg,
 ): Promise<void> {
 	const agents = await loadAgentDefs();
-	const selected = id ?? (await promptForAgent(ctx, agents));
+	const selected = id ?? (await promptForAgent(ctx, agents, state));
 	if (selected === undefined) return;
 	if (selected === null) {
-		await selectNone(pi, cfg);
+		await selectNone(pi, state, cfg);
 		return;
 	}
 	const agent = agents.find((a) => a.id === selected);
@@ -435,19 +441,24 @@ async function selectMainAgent(
 		warn(ctx, `agent ${selected} was not found`);
 		return;
 	}
-	const applied = await applyAgent(pi, ctx, agent);
+	const applied = await applyAgent(pi, ctx, agent, state);
 	pi.appendEntry(STATE_ENTRY, { agentId: applied ? agent.id : null });
-	updateFooter(cfg);
+	updateFooter(cfg, state);
 }
 
-async function selectNone(pi: ExtensionAPI, cfg: Cfg): Promise<void> {
-	clearActiveAgent(pi);
+async function selectNone(
+	pi: ExtensionAPI,
+	state: AgentState,
+	cfg: Cfg,
+): Promise<void> {
+	clearActiveAgent(pi, state);
 	pi.appendEntry(STATE_ENTRY, { agentId: null });
-	updateFooter(cfg);
+	updateFooter(cfg, state);
 }
 
 async function cycleMainAgent(
 	pi: ExtensionAPI,
+	state: AgentState,
 	ctx: MainCtx,
 	cfg: Cfg,
 ): Promise<void> {
@@ -457,46 +468,47 @@ async function cycleMainAgent(
 		return;
 	}
 	const index =
-		currentAgentId === null
+		state.currentAgentId === null
 			? -1
-			: agents.findIndex((a) => a.id === currentAgentId);
+			: agents.findIndex((a) => a.id === state.currentAgentId);
 	const agent = agents[index + 1];
 	if (agent === undefined) {
-		await selectNone(pi, cfg);
+		await selectNone(pi, state, cfg);
 		return;
 	}
-	const applied = await applyAgent(pi, ctx, agent);
+	const applied = await applyAgent(pi, ctx, agent, state);
 	pi.appendEntry(STATE_ENTRY, { agentId: applied ? agent.id : null });
-	updateFooter(cfg);
+	updateFooter(cfg, state);
 }
 
 async function applyAgent(
 	pi: ExtensionAPI,
 	ctx: MainCtx,
 	agent: AgentDef,
+	state: AgentState,
 ): Promise<boolean> {
 	const tools = resolveTools(pi, agent);
 	if ("issue" in tools) {
-		clearActiveAgent(pi);
+		clearActiveAgent(pi, state);
 		warn(ctx, tools.issue);
 		return false;
 	}
 	if (agent.model?.id !== undefined) {
 		const model = resolveModel(ctx, agent.model.id);
 		if (!model) {
-			clearActiveAgent(pi);
+			clearActiveAgent(pi, state);
 			warn(ctx, `model ${agent.model.id} was not found`);
 			return false;
 		}
 		if (!(await pi.setModel(model))) {
-			clearActiveAgent(pi);
+			clearActiveAgent(pi, state);
 			warn(ctx, `model ${agent.model.id} could not be applied`);
 			return false;
 		}
 	}
 	if (agent.model?.thinking !== undefined)
 		pi.setThinkingLevel(agent.model.thinking as any);
-	setActiveAgent(pi, agent.id, agent.prompt, tools.tools);
+	setActiveAgent(pi, state, agent.id, agent.prompt, tools.tools);
 	return true;
 }
 
@@ -532,6 +544,7 @@ function resolveModel(ctx: MainCtx, id: string): Model<Api> | undefined {
 async function promptForAgent(
 	ctx: MainCtx,
 	agents: readonly AgentDef[],
+	state: AgentState,
 ): Promise<string | null | undefined> {
 	if (ctx.hasUI === false || ctx.ui.custom === undefined) {
 		warn(ctx, "agent selection UI is unavailable");
@@ -555,7 +568,7 @@ async function promptForAgent(
 				noMatch: (t: string) => theme.fg("warning", t),
 			});
 			const index = options.findIndex(
-				(o) => o.value === (currentAgentId ?? NO_AGENT_VALUE),
+				(o) => o.value === (state.currentAgentId ?? NO_AGENT_VALUE),
 			);
 			list.setSelectedIndex(Math.max(0, index));
 			list.onSelect = (item) => done(item.value);
@@ -576,7 +589,11 @@ async function promptForAgent(
 
 // ── Session lifecycle ──
 
-async function restoreAgent(pi: ExtensionAPI, ctx: MainCtx): Promise<void> {
+async function restoreAgent(
+	pi: ExtensionAPI,
+	ctx: MainCtx,
+	state: AgentState,
+): Promise<void> {
 	let agentId: string | null = null;
 	for (const entry of [...ctx.sessionManager.getEntries()].reverse()) {
 		if (
@@ -591,16 +608,16 @@ async function restoreAgent(pi: ExtensionAPI, ctx: MainCtx): Promise<void> {
 		break;
 	}
 	if (agentId === null) {
-		clearActiveAgent(pi);
+		clearActiveAgent(pi, state);
 		return;
 	}
 	const agent = (await loadAgentDefs()).find((a) => a.id === agentId);
 	if (!agent) {
 		warn(ctx, `selected agent ${agentId} was not found`);
-		clearActiveAgent(pi);
+		clearActiveAgent(pi, state);
 		return;
 	}
-	await applyAgent(pi, ctx, agent);
+	await applyAgent(pi, ctx, agent, state);
 }
 
 function warn(ctx: MainCtx, msg: string): void {
@@ -615,11 +632,18 @@ export default async function mainAgentSelection(
 	const cfg = await readConfig();
 	if (!cfg.enabled) return;
 
+	const state: AgentState = {
+		currentAgentId: null,
+		activeAgentPrompt: undefined,
+		baselineActiveTools: undefined,
+		footerCtx: undefined,
+	};
+
 	pi.on("before_agent_start", async (event) => {
-		if (activeAgentPrompt === undefined) return undefined;
+		if (state.activeAgentPrompt === undefined) return undefined;
 		const base = (event as { systemPrompt?: string }).systemPrompt;
 		return {
-			systemPrompt: [base, activeAgentPrompt].filter(Boolean).join("\n\n"),
+			systemPrompt: [base, state.activeAgentPrompt].filter(Boolean).join("\n\n"),
 		};
 	});
 
@@ -628,10 +652,16 @@ export default async function mainAgentSelection(
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
 			if (trimmed.toLowerCase() === "none") {
-				await selectNone(pi, cfg);
+				await selectNone(pi, state, cfg);
 				return;
 			}
-			await selectMainAgent(pi, ctx as MainCtx, trimmed || undefined, cfg);
+			await selectMainAgent(
+				pi,
+				state,
+				ctx as MainCtx,
+				trimmed || undefined,
+				cfg,
+			);
 		},
 	});
 
@@ -641,17 +671,17 @@ export default async function mainAgentSelection(
 			{
 				description: "Cycle the main agent",
 				handler: async (ctx) => {
-					await cycleMainAgent(pi, ctx as MainCtx, cfg);
+					await cycleMainAgent(pi, state, ctx as MainCtx, cfg);
 				},
 			},
 		);
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		footerCtx = ctx as StatusCtx;
+		state.footerCtx = ctx as StatusCtx;
 		if (process.env.PI_SUBAGENT_AGENT_ID !== undefined) return;
-		await restoreAgent(pi, ctx as MainCtx);
-		updateFooter(cfg);
+		await restoreAgent(pi, ctx as MainCtx, state);
+		updateFooter(cfg, state);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -659,9 +689,9 @@ export default async function mainAgentSelection(
 		if (cfg.footer.enabled && sx !== undefined && sx.hasUI !== false) {
 			sx.ui.setStatus(cfg.footer.statusKey, undefined);
 		}
-		if (footerCtx === sx) footerCtx = undefined;
-		currentAgentId = null;
-		baselineActiveTools = undefined;
-		activeAgentPrompt = undefined;
+		state.footerCtx = undefined;
+		state.currentAgentId = null;
+		state.baselineActiveTools = undefined;
+		state.activeAgentPrompt = undefined;
 	});
 }
