@@ -51,16 +51,16 @@ The package includes defaults in `config.json`. To override them without editing
 }
 ```
 
-| Key                | Default           | Description                                       |
-| ------------------ | ----------------- | ------------------------------------------------- |
-| `enabled`          | `true`            | Enables this extension                            |
-| `command`          | `"agent"`         | Slash command name, without `/`                   |
+| Key                | Default           | Description                                               |
+| ------------------ | ----------------- | --------------------------------------------------------- |
+| `enabled`          | `true`            | Enables this extension                                    |
+| `command`          | `"agent"`         | Slash command name, without `/`                           |
 | `shortcut`         | `"alt+a"`         | Shortcut key for cycling agents; set to `null` to disable |
-| `footer.enabled`   | `true`            | Shows agent status in the footer                  |
-| `footer.statusKey` | `"current-agent"` | Status segment key passed to `ctx.ui.setStatus()` |
-| `footer.prefix`    | `"Agent:"`        | Text before the agent name                        |
-| `footer.colors`    | `{}`              | Agent ID to `#RRGGBB` colour map                  |
-| `footer.noneColor` | `"#6B7280"`       | Colour used when no agent is selected             |
+| `footer.enabled`   | `true`            | Shows agent status in the footer                          |
+| `footer.statusKey` | `"current-agent"` | Status segment key passed to `ctx.ui.setStatus()`         |
+| `footer.prefix`    | `"Agent:"`        | Text before the agent name                                |
+| `footer.colors`    | `{}`              | Agent ID to `#RRGGBB` colour map                          |
+| `footer.noneColor` | `"#6B7280"`       | Colour used when no agent is selected                     |
 
 Unlisted agents get a deterministic colour from a SHA-256 hash of the agent ID.
 
@@ -68,12 +68,11 @@ Shortcut values use pi's key format, for example `alt+a`, `ctrl+f2`, `f2`, or `e
 
 ## Agent definitions
 
-Agent definitions are loaded from the first available directory:
+Agent definitions are loaded from one directory, shared with subagent definitions:
 
-1. `~/.pi/agent/agent-suite/agent-selection/agents/*.md`
-2. `~/.pi/agent/agents/*.md` legacy fallback
+`~/.pi/agent/agents/*.md`
 
-The filename without `.md` is the agent ID. Only agents with `type: main` or `type: both` are shown.
+The filename without `.md` is the agent ID. Only agents that explicitly declare `type: main` or `type: both` are shown here; definitions without a `type` are treated as subagents and stay invisible to this selector.
 
 ```markdown
 ---

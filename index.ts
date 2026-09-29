@@ -7,8 +7,6 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
-import { env } from "node:process";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
@@ -111,17 +109,6 @@ function isEnoent(e: unknown): boolean {
 function errMsg(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
 }
-function suiteDir(sub: string): string {
-	const d = env.PI_AGENT_SUITE_DIR;
-	const base = d?.length
-		? d === "~"
-			? homedir()
-			: d.startsWith("~/")
-				? join(homedir(), d.slice(2))
-				: d
-		: join(getAgentDir(), "agent-suite");
-	return join(base, sub);
-}
 
 // ── Config ──
 
@@ -215,18 +202,10 @@ async function loadAgentDefs(): Promise<AgentDef[]> {
 }
 
 async function findAgentsDir(): Promise<string | undefined> {
-	const suitePath = join(suiteDir("agent-selection"), "agents");
+	const path = join(getAgentDir(), "agents");
 	try {
-		await readdir(suitePath);
-		return suitePath;
-	} catch (e) {
-		if (!isEnoent(e))
-			throw new Error(`failed to read suite agents dir: ${errMsg(e)}`);
-	}
-	const legacyPath = join(getAgentDir(), "agents");
-	try {
-		await readdir(legacyPath);
-		return legacyPath;
+		await readdir(path);
+		return path;
 	} catch {
 		return undefined;
 	}
@@ -244,7 +223,9 @@ async function parseAgentFile(
 	}
 	const { frontmatter: fm, body } = parseFrontmatter(content);
 	if (!isRecord(fm)) return undefined;
-	const type = fm.type ?? "main";
+	// Subagent definitions live beside main agents in one directory, so only an
+	// explicit type marks a definition as selectable here.
+	const type = fm.type;
 	if (type !== "main" && type !== "both") return undefined;
 	if (fm.description !== undefined && typeof fm.description !== "string")
 		return undefined;
