@@ -467,6 +467,7 @@ async function applyAgent(
 	ctx: MainCtx,
 	agent: AgentDef,
 	state: AgentState,
+	applyModel = true,
 ): Promise<boolean> {
 	const tools = resolveTools(pi, agent);
 	if ("issue" in tools) {
@@ -474,7 +475,7 @@ async function applyAgent(
 		warn(ctx, tools.issue);
 		return false;
 	}
-	if (agent.model?.id !== undefined) {
+	if (applyModel && agent.model?.id !== undefined) {
 		const model = resolveModel(ctx, agent.model.id);
 		if (!model) {
 			clearActiveAgent(pi, state);
@@ -487,7 +488,7 @@ async function applyAgent(
 			return false;
 		}
 	}
-	if (agent.model?.thinking !== undefined)
+	if (applyModel && agent.model?.thinking !== undefined)
 		pi.setThinkingLevel(agent.model.thinking as any);
 	setActiveAgent(pi, state, agent.id, agent.prompt, tools.tools);
 	return true;
@@ -574,6 +575,7 @@ async function restoreAgent(
 	pi: ExtensionAPI,
 	ctx: MainCtx,
 	state: AgentState,
+	applyModel = true,
 ): Promise<void> {
 	let agentId: string | null = null;
 	for (const entry of [...ctx.sessionManager.getEntries()].reverse()) {
@@ -598,7 +600,7 @@ async function restoreAgent(
 		clearActiveAgent(pi, state);
 		return;
 	}
-	await applyAgent(pi, ctx, agent, state);
+	await applyAgent(pi, ctx, agent, state, applyModel);
 }
 
 function warn(ctx: MainCtx, msg: string): void {
@@ -658,10 +660,13 @@ export default async function mainAgentSelection(
 		);
 	}
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		state.footerCtx = ctx as StatusCtx;
 		if (process.env.PI_SUBAGENT_AGENT_ID !== undefined) return;
-		await restoreAgent(pi, ctx as MainCtx, state);
+		// On /reload the runtime keeps the active model and thinking level, so
+		// re-applying them would clobber a manual override made via /model.
+		// Prompt and tools are in-memory extension state and still need restoring.
+		await restoreAgent(pi, ctx as MainCtx, state, event.reason !== "reload");
 		updateFooter(cfg, state);
 	});
 
