@@ -575,7 +575,6 @@ async function restoreAgent(
 	pi: ExtensionAPI,
 	ctx: MainCtx,
 	state: AgentState,
-	applyModel = true,
 ): Promise<void> {
 	let agentId: string | null = null;
 	for (const entry of [...ctx.sessionManager.getEntries()].reverse()) {
@@ -600,7 +599,11 @@ async function restoreAgent(
 		clearActiveAgent(pi, state);
 		return;
 	}
-	await applyAgent(pi, ctx, agent, state, applyModel);
+	// Restore only what this extension owns: prompt, tools, footer state.
+	// Model and thinking are session state — pi persists them (model_change /
+	// thinking_level_change entries) and restores them on resume itself. The
+	// explicit /agent selection is the only gesture that adopts the agent preset.
+	await applyAgent(pi, ctx, agent, state, false);
 }
 
 function warn(ctx: MainCtx, msg: string): void {
@@ -660,13 +663,10 @@ export default async function mainAgentSelection(
 		);
 	}
 
-	pi.on("session_start", async (event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		state.footerCtx = ctx as StatusCtx;
 		if (process.env.PI_SUBAGENT_AGENT_ID !== undefined) return;
-		// On /reload the runtime keeps the active model and thinking level, so
-		// re-applying them would clobber a manual override made via /model.
-		// Prompt and tools are in-memory extension state and still need restoring.
-		await restoreAgent(pi, ctx as MainCtx, state, event.reason !== "reload");
+		await restoreAgent(pi, ctx as MainCtx, state);
 		updateFooter(cfg, state);
 	});
 
