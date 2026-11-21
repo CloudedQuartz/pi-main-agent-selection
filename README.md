@@ -111,14 +111,17 @@ Selection is written to the pi session as a custom entry:
 pi.appendEntry("main-agent-selection", { agentId });
 ```
 
-On session start, the extension reads `ctx.sessionManager.getEntries()` backwards and restores the latest `main-agent-selection` entry. No external state files or in-process handoff map are used.
+On session start and after `/tree`, the extension restores the prompt and footer for the latest selection on the active branch. Pi restores the branch’s recorded tools; if the preset has not yet been used for a turn, the selector applies its explicit tool list. Only an explicit agent selection applies the preset’s model or thinking level; restoring a branch does not apply either. No external state files are used.
 
 ## Development
 
 ```bash
 npm install
 npx tsc --noEmit
+node test-branch.mjs /absolute/path/to/pi-coding-agent
 ```
+
+The branch regression test uses the installed Pi SDK, an isolated session, and a local mock endpoint. It makes no external model requests.
 
 The package and TypeScript config are for LSP/type checking. At runtime, pi resolves its own bundled packages through jiti/import aliases.
 

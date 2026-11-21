@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
+	type ExtensionContext,
 	getAgentDir,
 	parseFrontmatter,
 } from "@earendil-works/pi-coding-agent";
@@ -74,7 +75,7 @@ type StatusCtx = {
 	ui: { setStatus(key: string, text: string | undefined): void };
 };
 interface MainCtx extends StatusCtx {
-	sessionManager: { getEntries(): readonly unknown[] };
+	sessionManager: { getBranch(): readonly unknown[] };
 	ui: StatusCtx["ui"] & {
 		custom?<T>(
 			factory: (
@@ -468,7 +469,6 @@ async function applyAgent(
 	ctx: MainCtx,
 	agent: AgentDef,
 	state: AgentState,
-	applyModel = true,
 ): Promise<boolean> {
 	const tools = resolveTools(pi, agent);
 	if ("issue" in tools) {
@@ -476,7 +476,7 @@ async function applyAgent(
 		warn(ctx, tools.issue);
 		return false;
 	}
-	if (applyModel && agent.model?.id !== undefined) {
+	if (agent.model?.id !== undefined) {
 		const model = resolveModel(ctx, agent.model.id);
 		if (!model) {
 			clearActiveAgent(pi, state);
@@ -489,7 +489,7 @@ async function applyAgent(
 			return false;
 		}
 	}
-	if (applyModel && agent.model?.thinking !== undefined)
+	if (agent.model?.thinking !== undefined)
 		pi.setThinkingLevel(agent.model.thinking as any);
 	setActiveAgent(pi, state, agent.id, agent.prompt, tools.tools);
 	return true;
@@ -578,33 +578,33 @@ async function restoreAgent(
 	state: AgentState,
 ): Promise<void> {
 	let agentId: string | null = null;
-	for (const entry of [...ctx.sessionManager.getEntries()].reverse()) {
-		if (
-			!isRecord(entry) ||
-			entry.type !== "custom" ||
-			entry.customType !== STATE_ENTRY
-		)
-			continue;
+	let recordedSinceSelection = false;
+	for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
+		if (!isRecord(entry)) continue;
+		if (entry.type === "message" && isRecord(entry.message)) {
+			const role = entry.message.role;
+			if (role === "system" || role === "assistant") recordedSinceSelection = true;
+		}
+		if (entry.type !== "custom" || entry.customType !== STATE_ENTRY) continue;
 		const data = entry.data;
 		agentId =
 			isRecord(data) && typeof data.agentId === "string" ? data.agentId : null;
 		break;
 	}
-	if (agentId === null) {
-		clearActiveAgent(pi, state);
-		return;
+	const agent = agentId === null ? undefined : (await loadAgentDefs()).find((a) => a.id === agentId);
+	if (agentId !== null && !agent) warn(ctx, `selected agent ${agentId} was not found`);
+	state.currentAgentId = agent?.id ?? null;
+	state.activeAgentPrompt = agent?.prompt;
+
+	// Pi has already restored the branch's recorded tools, including manual
+	// changes. A later turn can reuse an unchanged loadout without a new system
+	// message. Apply explicit preset tools only for a selection not yet used on
+	// a turn; never reapply the preset's model.
+	if (agent?.tools !== undefined && !recordedSinceSelection) {
+		const resolved = resolveTools(pi, agent);
+		if ("issue" in resolved) warn(ctx, resolved.issue);
+		else setActiveAgent(pi, state, agent.id, agent.prompt, resolved.tools);
 	}
-	const agent = (await loadAgentDefs()).find((a) => a.id === agentId);
-	if (!agent) {
-		warn(ctx, `selected agent ${agentId} was not found`);
-		clearActiveAgent(pi, state);
-		return;
-	}
-	// Restore only what this extension owns: prompt, tools, footer state.
-	// Model and thinking are session state — pi persists them (model_change /
-	// thinking_level_change entries) and restores them on resume itself. The
-	// explicit /agent selection is the only gesture that adopts the agent preset.
-	await applyAgent(pi, ctx, agent, state, false);
 }
 
 function warn(ctx: MainCtx, msg: string): void {
@@ -668,12 +668,14 @@ export default async function mainAgentSelection(
 		);
 	}
 
-	pi.on("session_start", async (_event, ctx) => {
-		state.footerCtx = ctx as StatusCtx;
+	async function restoreSelection(ctx: ExtensionContext): Promise<void> {
 		if (process.env.PI_SUBAGENT_AGENT_ID !== undefined) return;
+		state.footerCtx = ctx;
 		await restoreAgent(pi, ctx as MainCtx, state);
 		updateFooter(cfg, state);
-	});
+	}
+	pi.on("session_start", (_event, ctx) => restoreSelection(ctx));
+	pi.on("session_tree", (_event, ctx) => restoreSelection(ctx));
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		const sx = ctx as StatusCtx;
