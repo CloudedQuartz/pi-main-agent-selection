@@ -24,6 +24,7 @@ import {
 
 const EXT_DIR = "main-agent-selection";
 const STATE_ENTRY = "main-agent-selection";
+const AGENT_SECTION = "main_agent";
 const NO_AGENT_VALUE = "__none__";
 const RESET = "\x1b[0m";
 const THINKING_VALUES = new Set([
@@ -625,12 +626,16 @@ export default async function mainAgentSelection(
 		footerCtx: undefined,
 	};
 
+	// Pi diffs named prompt sections against the transcript and appends only the
+	// changed ones as a system patch. Returning `systemPrompt` instead would force
+	// the whole prompt for the run, freezing every later handler's contribution
+	// (for example model-specific instructions). The section tag deliberately is
+	// not `active_agent`, which marks subagent child sessions.
 	pi.on("before_agent_start", async (event) => {
-		if (state.activeAgentPrompt === undefined) return undefined;
-		const base = (event as { systemPrompt?: string }).systemPrompt;
-		return {
-			systemPrompt: [base, state.activeAgentPrompt].filter(Boolean).join("\n\n"),
-		};
+		const sections = event.systemPromptOptions.sections;
+		const prompt = state.activeAgentPrompt;
+		if (prompt) sections[AGENT_SECTION] = prompt;
+		else delete sections[AGENT_SECTION];
 	});
 
 	pi.registerCommand(cfg.command, {
